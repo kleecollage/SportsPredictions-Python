@@ -282,12 +282,29 @@ def nba_get_home_away_splits(team_name: str, location: str) -> dict:
             if gp < 2:
                 continue
 
-            pts = float(row.get("PTS", 0) or 0)
-            pm  = float(row.get("PLUS_MINUS", 0) or 0)
-            w   = int(row.get("W", 0) or 0)
+            pts_raw = float(row.get("PTS", 0) or 0)
+            pm_raw  = float(row.get("PLUS_MINUS", 0) or 0)
+            w       = int(row.get("W", 0) or 0)
+
+            # La API devuelve totales acumulados cuando per_mode_simple falla.
+            # Sanity check: ppg > 200 indica totales, no promedios → normalizar.
+            if pts_raw > 200:
+                pts = round(pts_raw / gp, 1)
+                pm  = round(pm_raw  / gp, 1)
+                log.debug("Splits %s: normalizando totales ÷ %d (raw pts=%.0f)",
+                          team_name, gp, pts_raw)
+            else:
+                pts = pts_raw
+                pm  = pm_raw
+
+            # Validación final: ppg NBA debe estar entre 85 y 140
+            if not (85.0 <= pts <= 140.0):
+                log.warning("Splits %s (%s): ppg=%.1f fuera de rango tras normalización — descartando",
+                            team_name, location, pts)
+                continue
 
             result = {
-                "ppg":     round(pts, 1),
+                "ppg":     pts,
                 "opp_ppg": round(pts - pm, 1),
                 "win_pct": round(w / gp * 100, 1),
                 "gp":      gp,
@@ -342,7 +359,7 @@ def nba_get_h2h_stats(home_team: str, away_team: str, n_games: int = 10) -> dict
             team_id_nullable=home_tid,
             vs_team_id_nullable=away_tid,
             season_type_nullable="Playoffs",
-            timeout=60,
+            timeout=90,
         )
         df = finder.get_data_frames()[0]
 
@@ -353,7 +370,7 @@ def nba_get_h2h_stats(home_team: str, away_team: str, n_games: int = 10) -> dict
                 team_id_nullable=home_tid,
                 vs_team_id_nullable=away_tid,
                 season_type_nullable="Regular Season",
-                timeout=60,
+                timeout=90,
             )
             df = finder_rs.get_data_frames()[0]
 
