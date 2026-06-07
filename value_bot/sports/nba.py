@@ -7,6 +7,7 @@ from value_bot.config import (
     ABB_BASE, NBA_LEAGUE_ID, NBA_SEASON, NBA_API_SEASON,
     DAYS_AHEAD, api_sports_get,
 )
+from value_bot.store import store
 from value_bot.scrapers.espn import espn_nba_games, espn_parse_nba, scrape_bbc_sport_nba
 
 try:
@@ -20,9 +21,6 @@ log = logging.getLogger(__name__)
 
 if not NBA_API_OK:
     log.warning("nba_api no disponible — usando api-sports + ESPN como fuente NBA")
-
-_nba_league_cache: dict = {}
-_nba_team_form_cache: dict = {}
 
 
 def _is_nba_playoffs_month():
@@ -48,8 +46,8 @@ def _nba_find_team_id(name):
 
 def nba_get_league_stats(season_type="Playoffs"):
     """LeagueDashTeamStats with cache. Returns {team_name: {ppg, opp_ppg, win_pct, gp, pm}}"""
-    if season_type in _nba_league_cache:
-        return _nba_league_cache[season_type]
+    if season_type in store.nba_league_cache:
+        return store.nba_league_cache[season_type]
     if not NBA_API_OK:
         return {}
     try:
@@ -67,7 +65,7 @@ def nba_get_league_stats(season_type="Playoffs"):
             )
         df = ls.get_data_frames()[0]
         if df.empty:
-            _nba_league_cache[season_type] = {}
+            store.nba_league_cache[season_type] = {}
             return {}
         result = {}
         for _, row in df.iterrows():
@@ -90,26 +88,26 @@ def nba_get_league_stats(season_type="Playoffs"):
                 "gp":      gp,
                 "pm":      pm,
             }
-        _nba_league_cache[season_type] = result
+        store.nba_league_cache[season_type] = result
         log.info("nba_api %s stats: %d equipos", season_type, len(result))
         return result
     except Exception as e:
         log.warning("nba_api LeagueDash (%s): %s", season_type, e)
-        _nba_league_cache[season_type] = {}
+        store.nba_league_cache[season_type] = {}
         return {}
 
 
 def nba_get_team_form(team_name):
     """TeamGameLog — últimos juegos. Returns {form, ppg, win_rate, ...}"""
-    if team_name in _nba_team_form_cache:
-        return _nba_team_form_cache[team_name]
+    if team_name in store.nba_team_form_cache:
+        return store.nba_team_form_cache[team_name]
     if not NBA_API_OK:
-        _nba_team_form_cache[team_name] = {}
+        store.nba_team_form_cache[team_name] = {}
         return {}
     tid = _nba_find_team_id(team_name)
     if not tid:
         log.warning("nba_api: equipo no encontrado: '%s'", team_name)
-        _nba_team_form_cache[team_name] = {}
+        store.nba_team_form_cache[team_name] = {}
         return {}
     for stype in ("Playoffs", "Regular Season"):
         try:
@@ -131,11 +129,11 @@ def nba_get_team_form(team_name):
                 "played":     len(df),
                 "stype":      stype,
             }
-            _nba_team_form_cache[team_name] = res
+            store.nba_team_form_cache[team_name] = res
             return res
         except Exception as e:
             log.warning("nba_api TeamGameLog (%s, %s): %s", team_name, stype, e)
-    _nba_team_form_cache[team_name] = {}
+    store.nba_team_form_cache[team_name] = {}
     return {}
 
 
@@ -239,7 +237,6 @@ def get_best_nba_stats(game):
 
 def get_nba_games():
     """Collect NBA games for today + DAYS_AHEAD from api-sports + ESPN + BBC + Playwright."""
-    from value_bot.scrapers.flashscore import _pw_nba_games
 
     today = datetime.now()
     games = []
@@ -319,10 +316,10 @@ def get_nba_games():
             })
 
     # Source 4: Playwright Flashscore (Capa 4)
-    if not games and _pw_nba_games:
-        log.info("NBA Fuente 4: Playwright Flashscore (%d partidos)", len(_pw_nba_games))
+    if not games and store.pw_nba_games:
+        log.info("NBA Fuente 4: Playwright Flashscore (%d partidos)", len(store.pw_nba_games))
         today_str = today.strftime("%Y-%m-%d")
-        for g in _pw_nba_games:
+        for g in store.pw_nba_games:
             games.append({
                 "sport": "nba",
                 "date": today_str,

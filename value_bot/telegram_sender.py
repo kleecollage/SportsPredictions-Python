@@ -7,7 +7,7 @@ from telegram import Bot
 from telegram.constants import ParseMode
 
 from value_bot.config import BOT_TOKEN, CHAT_ID, VALUE_THRESHOLD
-from value_bot.sports.nba import _nba_team_form_cache
+from value_bot.store import store
 from value_bot.analysis.picks import _form_emoji
 
 log = logging.getLogger(__name__)
@@ -78,8 +78,8 @@ def _game_block(group):
     if sport == "nba":
         h_rec = gi.get("home_record", "")
         a_rec = gi.get("away_record", "")
-        h_form_data = _nba_team_form_cache.get(gi["home"], {})
-        a_form_data = _nba_team_form_cache.get(gi["away"], {})
+        h_form_data = store.nba_team_form_cache.get(gi["home"], {})
+        a_form_data = store.nba_team_form_cache.get(gi["away"], {})
         if h_form_data or a_form_data:
             h_info = (f"{h_form_data.get('ppg','?')}pts "
                       f"{_form_emoji(h_form_data.get('form',''))}"
@@ -225,11 +225,27 @@ def build_message(fp, np, parlays, upcoming=None):
     return "\n".join(lines)
 
 
+def _split_html_message(msg: str, max_len: int = 3900) -> list:
+    """Corta el mensaje en líneas completas para no partir tags HTML a la mitad."""
+    chunks, current, size = [], [], 0
+    for line in msg.split("\n"):
+        line_len = len(line) + 1  # +1 por el \n
+        if size + line_len > max_len and current:
+            chunks.append("\n".join(current))
+            current, size = [], 0
+        current.append(line)
+        size += line_len
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
 async def send_telegram(msg):
     bot = Bot(token=BOT_TOKEN)
-    for i in range(0, len(msg), 4000):
+    chunks = _split_html_message(msg)
+    for idx, chunk in enumerate(chunks):
         await bot.send_message(
-            chat_id=CHAT_ID, text=msg[i:i+4000], parse_mode=ParseMode.HTML
+            chat_id=CHAT_ID, text=chunk, parse_mode=ParseMode.HTML
         )
-        if i + 4000 < len(msg):
+        if idx < len(chunks) - 1:
             await asyncio.sleep(0.5)

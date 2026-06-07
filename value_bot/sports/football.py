@@ -8,10 +8,9 @@ from value_bot.config import (
     TOP_LEAGUES_FOOTBALL, FALLBACK_LEAGUES_FOOTBALL,
     fd_get, api_sports_get, http_get,
 )
+from value_bot.store import store
 
 log = logging.getLogger(__name__)
-
-_odds_cache: dict = {}
 
 
 # ── Odds ──────────────────────────────────────────────────────────
@@ -19,15 +18,15 @@ _odds_cache: dict = {}
 def get_real_odds(sport_key, home, away):
     if not THE_ODDS_API_KEY or not sport_key:
         return None
-    if sport_key not in _odds_cache:
+    if sport_key not in store.odds_cache:
         data = http_get(
             f"{ODDS_BASE}/sports/{sport_key}/odds/",
             params={"apiKey": THE_ODDS_API_KEY, "regions": "eu", "markets": "h2h"},
             skip_codes=(401, 404),
         )
-        _odds_cache[sport_key] = data if isinstance(data, list) else []
+        store.odds_cache[sport_key] = data if isinstance(data, list) else []
     hl, al = home.lower()[:7], away.lower()[:7]
-    for g in _odds_cache.get(sport_key, []):
+    for g in store.odds_cache.get(sport_key, []):
         gh = (g.get("home_team") or "").lower()
         ga = (g.get("away_team") or "").lower()
         if hl in gh and al in ga:
@@ -74,7 +73,6 @@ def _parse_afl_fix(m, league, info, date):
 
 
 def collect_football_fixtures():
-    from value_bot.scrapers.flashscore import _pw_football_fixtures
 
     today     = datetime.now()
     date_from = today.strftime("%Y-%m-%d")
@@ -130,15 +128,15 @@ def collect_football_fixtures():
                         fixtures.append(p); found = True
 
     # Capa 4: Playwright Flashscore
-    if len(fixtures) < MIN_FIXTURES_TOP and _pw_football_fixtures:
+    if len(fixtures) < MIN_FIXTURES_TOP and store.pw_football_fixtures:
         log.info("Football Capa 4: Playwright Flashscore (%d fixtures disponibles)",
-                 len(_pw_football_fixtures))
+                 len(store.pw_football_fixtures))
         existing_keys = {
             (f["home"].lower()[:6], f["away"].lower()[:6])
             for f in fixtures
         }
         added = 0
-        for fix in _pw_football_fixtures:
+        for fix in store.pw_football_fixtures:
             key = (fix["home"].lower()[:6], fix["away"].lower()[:6])
             if key not in existing_keys:
                 fixtures.append(fix)
