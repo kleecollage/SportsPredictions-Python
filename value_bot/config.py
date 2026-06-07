@@ -9,6 +9,12 @@ try:
 except ImportError:
     pass
 
+try:
+    from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+    TENACITY_OK = True
+except ImportError:
+    TENACITY_OK = False
+
 # ── Telegram ──────────────────────────────────────────────────────
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -118,29 +124,65 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(mes
 log = logging.getLogger(__name__)
 
 
+# ── Validación de entorno ─────────────────────────────────────────
+
+def validate_env():
+    required = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]
+    missing = [k for k in required if not os.getenv(k)]
+    if missing:
+        raise EnvironmentError(f"Variables de entorno requeridas faltantes: {missing}")
+
+validate_env()
+
+_optional_tokens = {
+    "FOOTBALL_DATA_TOKEN": "football-data.org (Capa 1 fútbol)",
+    "API_SPORTS_KEY":      "api-sports/api-football (Capa 2)",
+    "THE_ODDS_API_KEY":    "The Odds API (value bets)",
+}
+for _var, _desc in _optional_tokens.items():
+    if not os.getenv(_var):
+        log.warning("Token opcional no configurado: %s → %s desactivado", _var, _desc)
+
+
 # ── HTTP helpers ──────────────────────────────────────────────────
 
+def _http_get_raw(url, headers, params, timeout):
+    """Inner request que tenacity puede reintentar con backoff exponencial."""
+    r = requests.get(url, headers=headers, params=params, timeout=timeout)
+    if r.status_code == 429:
+        raise requests.exceptions.RequestException(f"rate-limit 429: {url[:60]}")
+    r.raise_for_status()
+    return r.json()
+
+
+if TENACITY_OK:
+    _http_get_raw = retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        retry=retry_if_exception_type(requests.exceptions.RequestException),
+        reraise=True,
+    )(_http_get_raw)
+
+
 def http_get(url, headers=None, params=None, skip_codes=(403, 404), timeout=12):
-    for attempt in range(2):
-        try:
-            r = requests.get(url, headers=headers or {}, params=params or {}, timeout=timeout)
-            if r.status_code in skip_codes:
-                log.warning("HTTP %d (definitivo): %s", r.status_code, url[:80])
-                return {}
-            if r.status_code == 429:
-                wait = 15 * (attempt + 1)
-                log.warning("Rate limit 429. Esperando %ds...", wait)
-                time.sleep(wait)
-                continue
-            r.raise_for_status()
-            return r.json()
-        except requests.exceptions.HTTPError:
+    h = headers or {}
+    p = params or {}
+    try:
+        # Verificar códigos definitivos antes de reintentar
+        probe = requests.get(url, headers=h, params=p, timeout=timeout)
+        if probe.status_code in skip_codes:
+            log.warning("HTTP %d (definitivo): %s", probe.status_code, url[:80])
             return {}
-        except Exception as exc:
-            log.warning("HTTP error [%s]: %s", url[:60], exc)
-            if attempt == 0:
-                time.sleep(2)
-    return {}
+        if probe.status_code not in (200, 201):
+            # Delegar el reintento a tenacity para 429 y 5xx
+            return _http_get_raw(url, h, p, timeout)
+        return probe.json()
+    except requests.exceptions.RequestException as exc:
+        log.warning("HTTP definitivamente falló [%s]: %s", url[:60], exc)
+        return {}
+    except Exception as exc:
+        log.warning("HTTP error inesperado [%s]: %s", url[:60], exc)
+        return {}
 
 
 def api_sports_get(base, endpoint, params):
@@ -149,7 +191,8 @@ def api_sports_get(base, endpoint, params):
 
 def fd_get(path, params=None):
     result = http_get(f"{FD_BASE}{path}", headers=FD_HEADS, params=params)
-    time.sleep(7)
+    if result:  # solo esperar si hubo respuesta real (respetar rate limit)
+        time.sleep(7)
     return result
 
 
