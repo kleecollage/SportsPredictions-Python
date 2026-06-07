@@ -148,8 +148,84 @@ def collect_football_fixtures():
     return fixtures
 
 
+# Cache nombre→id para no llamar a /teams?search= dos veces por el mismo equipo
+_team_id_cache: dict = {}
+
+# Mapa de nombre de liga → (afl_id, season) para Flashscore fixtures sin IDs
+_LEAGUE_AFL_MAP: dict = {
+    **{name: (info["afl"], info["afl_s"])   for name, info in TOP_LEAGUES_FOOTBALL.items()},
+    **{name: (info["afl"], info["season"])  for name, info in FALLBACK_LEAGUES_FOOTBALL.items()},
+}
+
+
+def _resolve_team_id_by_name(team_name: str, league_id: int, season: int) -> int | None:
+    """
+    Busca el ID de un equipo en api-football usando su nombre.
+    Primero intenta coincidencia exacta, luego por primera palabra del nombre.
+    Resultados cacheados en _team_id_cache para evitar llamadas repetidas.
+    """
+    cache_key = (team_name, league_id, season)
+    if cache_key in _team_id_cache:
+        return _team_id_cache[cache_key]
+
+    tl = team_name.lower()
+    # Intentar dos términos de búsqueda: nombre completo y primera palabra
+    for search_term in [team_name, team_name.split()[0]]:
+        resp = api_sports_get(AFL_BASE, "teams", {
+            "search": search_term,
+            "league": league_id,
+            "season": season,
+        })
+        teams = resp.get("response", [])
+        if not teams:
+            continue
+        for t in teams:
+            name = t.get("team", {}).get("name", "").lower()
+            tid  = t.get("team", {}).get("id")
+            if tid and (tl in name or name in tl or
+                        any(w in name for w in tl.split() if len(w) > 3)):
+                _team_id_cache[cache_key] = tid
+                log.info("Resolved '%s' → team_id=%d (league=%d season=%d)",
+                         team_name, tid, league_id, season)
+                return tid
+
+    _team_id_cache[cache_key] = None
+    log.warning("No se pudo resolver team_id para '%s' (league=%d season=%d)",
+                team_name, league_id, season)
+    return None
+
+
+def _fetch_team_stats(tid: int, lid: int, season: int) -> dict:
+    """Llama a api-football /teams/statistics y parsea la respuesta."""
+    resp = api_sports_get(AFL_BASE, "teams/statistics",
+                          {"team": tid, "league": lid, "season": season}).get("response", {})
+    if not resp:
+        return {}
+    pi     = resp.get("fixtures", {}).get("played", {})
+    played = pi.get("total", 0) if isinstance(pi, dict) else int(pi or 0)
+    if played < 3:
+        return {}
+    gf = resp.get("goals", {}).get("for",     {}).get("total", {}).get("total", 0)
+    ga = resp.get("goals", {}).get("against", {}).get("total", {}).get("total", 0)
+    w  = resp.get("fixtures", {}).get("wins",  {}).get("total", 0)
+    d  = resp.get("fixtures", {}).get("draws", {}).get("total", 0)
+    fs = resp.get("form", "") or ""
+    rec = fs[-5:] if len(fs) >= 5 else fs
+    fp  = sum(3 if c == "W" else (1 if c == "D" else 0) for c in rec)
+    return {
+        "played": played,
+        "goals_for_pg":     round(gf / max(played, 1), 2),
+        "goals_against_pg": round(ga / max(played, 1), 2),
+        "win_rate":  round(w / max(played, 1) * 100, 1),
+        "draw_rate": round(d / max(played, 1) * 100, 1),
+        "form": rec, "form_pts": fp,
+    }
+
+
 def build_football_stats(fixtures):
     stats = {}
+
+    # ── Paso 1: football-data.org standings (fixtures con fd_code) ────────────
     if FOOTBALL_DATA_TOKEN and FOOTBALL_DATA_TOKEN != "YOUR_FOOTBALL_DATA_TOKEN":
         for code in set(f["fd_code"] for f in fixtures if f.get("fd_code")):
             for section in fd_get(f"/competitions/{code}/standings").get("standings", []):
@@ -172,39 +248,56 @@ def build_football_stats(fixtures):
                         "form": rec, "form_pts": fp,
                     }
 
-    missing = set()
+    # ── Paso 2: api-football con IDs conocidos (fixtures con afl_lid) ─────────
+    missing_with_ids = set()
     for f in fixtures:
         for side in ("home", "away"):
             nm = f[side]
             if nm not in stats:
-                missing.add((nm, f.get(f"{side}_id_afl"), f.get("afl_lid"), f.get("afl_season")))
+                missing_with_ids.add((
+                    nm,
+                    f.get(f"{side}_id_afl"),
+                    f.get("afl_lid"),
+                    f.get("afl_season"),
+                ))
 
-    for tname, tid, lid, season in missing:
+    for tname, tid, lid, season in missing_with_ids:
         if not (tid and lid and season):
-            continue
-        resp = api_sports_get(AFL_BASE, "teams/statistics",
-                              {"team": tid, "league": lid, "season": season}).get("response", {})
-        if not resp:
-            continue
-        pi     = resp.get("fixtures", {}).get("played", {})
-        played = pi.get("total", 0) if isinstance(pi, dict) else int(pi or 0)
-        if played < 3:
-            continue
-        gf = resp.get("goals", {}).get("for",     {}).get("total", {}).get("total", 0)
-        ga = resp.get("goals", {}).get("against", {}).get("total", {}).get("total", 0)
-        w  = resp.get("fixtures", {}).get("wins",  {}).get("total", 0)
-        d  = resp.get("fixtures", {}).get("draws", {}).get("total", 0)
-        fs = resp.get("form", "") or ""
-        rec = fs[-5:] if len(fs) >= 5 else fs
-        fp  = sum(3 if c == "W" else (1 if c == "D" else 0) for c in rec)
-        stats[tname] = {
-            "played": played,
-            "goals_for_pg":     round(gf / max(played, 1), 2),
-            "goals_against_pg": round(ga / max(played, 1), 2),
-            "win_rate":  round(w / max(played, 1) * 100, 1),
-            "draw_rate": round(d / max(played, 1) * 100, 1),
-            "form": rec, "form_pts": fp,
-        }
+            continue   # sin IDs → se resuelve en el Paso 3
+        s = _fetch_team_stats(tid, lid, season)
+        if s:
+            stats[tname] = s
 
-    log.info("Football stats: %d equipos", len(stats))
+    # ── Paso 3: resolución por nombre para fixtures de Flashscore (sin IDs) ───
+    # Flashscore fixtures tienen afl_lid=None pero sí tienen league name,
+    # que mapeamos a (afl_id, season) via _LEAGUE_AFL_MAP para buscar en api-football
+    still_missing = [
+        (f[side], f.get("league", ""))
+        for f in fixtures
+        for side in ("home", "away")
+        if f[side] not in stats and not f.get(f"{side}_id_afl")
+    ]
+    # Deduplicar (mismo equipo puede aparecer en varios fixtures)
+    seen = set()
+    for tname, league_name in still_missing:
+        if tname in seen or tname in stats:
+            continue
+        seen.add(tname)
+
+        league_meta = _LEAGUE_AFL_MAP.get(league_name)
+        if not league_meta:
+            log.debug("Sin mapeo AFL para liga '%s' (equipo: %s)", league_name, tname)
+            continue
+        lid, season = league_meta
+
+        tid = _resolve_team_id_by_name(tname, lid, season)
+        if not tid:
+            continue
+
+        s = _fetch_team_stats(tid, lid, season)
+        if s:
+            stats[tname] = s
+            log.info("Stats resueltas por nombre: %s (liga %s)", tname, league_name)
+
+    log.info("Football stats: %d equipos (%d fixtures)", len(stats), len(fixtures))
     return stats
