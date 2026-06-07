@@ -5,7 +5,7 @@ Analista Senior de Apuestas Multi-Deporte. Generar pronósticos + parlays diario
 
 ## Script principal
 `/Users/kleec/Documents/PredictsProyect/predictions_betting_bot.py`
-Versión actual: **Value Bot Pro v4.4** (1922 líneas)
+Versión actual: **Value Bot Pro v4.5** (2144 líneas)
 
 ## Deportes soportados
 | Deporte | Estado | Fuentes |
@@ -102,11 +102,17 @@ Versión actual: **Value Bot Pro v4.4** (1922 líneas)
 
 ## Lógica de análisis
 
-### Fútbol
-- **Over 2.5 Goles**: avg_goals >= 2.7 → conf 70-82%
-- **BTTS**: prob_h * prob_a >= 0.55 → conf 55-80%
-- **1X2**: diff de fuerza >= 22 puntos → conf 52-78%
+### Fútbol (v4.5 — lógica Poisson)
+- **Over 2.5**: `_poisson_over(exp_h+exp_a, 2)` >= 0.50 → conf 50-80%; ligas attacking/balanced/technical
+- **Under 2.5**: `1 - over25` >= 0.52 → conf 52-78%; ligas defensive (Serie A, Copa Lib, Brasileirao…)
+- **BTTS**: `_poisson_btts(exp_h, exp_a)` >= 0.56 → conf 56-78%; no se combina con Under 2.5
+- **1X2**: diff fuerza >= 24 pts → prob vía función logística `1/(1+e^(-diff/28))` → conf 55-76%
+- **Double Chance**: diff 12–23 pts → conf 58-78%
+- **Empate (X)**: diff <= 10 + liga draw_pct >= 26% → conf 62-66%
 - **Value bet**: edge = (our_prob × real_odds) - 1 >= 0.04 → marcado con 💎
+- **Max picks/partido**: 3 (ordenados por confianza, sin redundancias)
+- **Expected Goals**: `exp_h = (gf_h + ga_a) / 2` — promedio entre ataque propio y defensa rival
+- **Estilos de liga**: attacking (BL1, MLS, UCL), defensive (SA, CopLib, Brasileirao…), technical (PD), balanced (PL, FL1, MX, WC)
 
 ### NBA
 - **Over/Under**: projected_total >= 222 → Over | <= 208 → Under
@@ -137,7 +143,8 @@ crontab -e
 ---
 
 ## Bugs conocidos y resueltos
-1. **Season bug**: `afl_current_season()` devolvía 2025 para ligas que necesitan 2026 → cada liga fallback tiene `season` explícito
+1. **import os faltante** (v4.5): el refactor `.env` de la sesión anterior omitió `import os` → script fallaba en línea 79 con `NameError`. Corregido en v4.5.
+2. **Season bug**: `afl_current_season()` devolvía 2025 para ligas que necesitan 2026 → cada liga fallback tiene `season` explícito
 2. **MLS/Liga MX en football-data.org** → 403 (no están en free tier) → solo se usan vía api-football
 3. **Loop de reintentos en 403/404** → `http_get` no reintenta en errores definitivos (`skip_codes=(403,404)`)
 4. **MarkdownV2 escaping** → cambiado a HTML parse mode en todo el bot
@@ -154,4 +161,5 @@ crontab -e
 - **v1.0 Pro ⚽🏀**: Multi-deporte con ESPN Hidden API + BBC scraping + parlays cross-sport
 - **v4.2 ⚽🏀**: nba_api integrado, 3-5 picks/juego, parlays automáticos 62%+, formato agrupado por partido, sección upcoming
 - **v4.3 ⚽🏀**: Playwright stealth Capa 4 (Flashscore NBA+Fútbol), UA rotation, request interception, scroll infinito, fix nba_api per_mode_simple
-- **v4.4 ⚽🏀**: BUGFIX NBA Over Points (normalization totales→per-game), sanity check 180-275pts, LEAGUE_AVERAGES fútbol, Double Chance picks, NBA Spread+TeamTotal, múltiples picks/partido fútbol, parlays same-sport (ACTUAL)
+- **v4.4 ⚽🏀**: BUGFIX NBA Over Points (normalization totales→per-game), sanity check 180-275pts, LEAGUE_AVERAGES fútbol, Double Chance picks, NBA Spread+TeamTotal, múltiples picks/partido fútbol, parlays same-sport
+- **v4.5 ⚽🏀**: FIX CRÍTICO import os, probabilidades Poisson reales, Under 2.5 nuevo mercado, picks por estilo de liga, max 3 picks/partido, reasoning con XG, 1X2 logístico, Double Chance 12-23pts (ACTUAL)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-🏆 Value Bot Pro v4.4 — Multi-Deporte + Playwright Stealth
+🏆 Value Bot Pro v4.5 — Multi-Deporte + Playwright Stealth
 ══════════════════════════════════════════════════════════════════
 CAMBIOS v4.3 vs v4.2:
   ✅ Playwright stealth scraping  → Capa 4 (Flashscore NBA + Fútbol)
@@ -9,6 +9,18 @@ CAMBIOS v4.3 vs v4.2:
   ✅ Interceptación de requests    → bloqueo de imagen/font/media (velocidad)
   ✅ Scroll infinito               → carga fixtures adicionales
   ✅ Fix nba_api per_mode_simple   → try/except TypeError (compatibility)
+
+CAMBIOS v4.5 vs v4.4:
+  ✅ FIX CRITICO import os + dotenv block (faltaba → NameError en os.getenv)
+  ✅ Probabilidades Poisson reales  → Over/Under y BTTS matemáticamente correctos
+  ✅ Under 2.5 Goles               → nuevo mercado para ligas defensivas
+  ✅ Picks por estilo de liga       → attacking/defensive/technical/balanced
+  ✅ Máximo 3 picks/partido         → calidad > cantidad, sin redundancias
+  ✅ Razonamientos con XG reales    → "XG local 1.42 + XG visitante 1.18 = 2.60"
+  ✅ 1X2 vía función logística      → más suave que lineal, range 55-76%
+  ✅ Double Chance umbral 12-23pts  → más preciso que el anterior 10-22
+  ✅ LEAGUE_AVERAGES ampliado       → under25_pct, draw_pct, style nuevos campos
+  ✅ BTTS no contradice Under 2.5   → picks coherentes entre sí
 
 CAMBIOS v4.4 vs v4.3:
   ✅ BUGFIX NBA Over Points       → normalizar totales→per-game (era "Over 3726")
@@ -42,6 +54,15 @@ FUENTES FÚTBOL:
   4. Fallback ligas activas     (Mundial 2026, MLS, Brasileirao…)
   5. Playwright Flashscore      (Capa 4 ← NUEVO v4.3)
 """
+
+import os
+import math
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv no instalado — usar variables de entorno del sistema
 
 import requests
 import asyncio
@@ -163,23 +184,28 @@ FALLBACK_LEAGUES_FOOTBALL = {
     "Liga MX":           {"afl": 262, "season": 2025, "flag": "🇲🇽", "odds": None},
 }
 
-# Promedios de liga — v4.4
+# Promedios de liga — v4.5 (+ under25_pct, draw_pct, style para picks inteligentes)
+# Campos:  avg_goals  btts_pct  home_win_pct  over25_pct  under25_pct  draw_pct  style
+# style: "attacking" | "defensive" | "technical" | "balanced"
 LEAGUE_AVERAGES: dict = {
-    "Premier League":    {"avg_goals": 2.82, "btts_pct": 55, "home_win_pct": 46, "over25_pct": 57},
-    "LaLiga":            {"avg_goals": 2.57, "btts_pct": 52, "home_win_pct": 46, "over25_pct": 51},
-    "Bundesliga":        {"avg_goals": 3.13, "btts_pct": 60, "home_win_pct": 45, "over25_pct": 63},
-    "Serie A":           {"avg_goals": 2.52, "btts_pct": 50, "home_win_pct": 44, "over25_pct": 49},
-    "Ligue 1":           {"avg_goals": 2.64, "btts_pct": 52, "home_win_pct": 46, "over25_pct": 51},
-    "Champions League":  {"avg_goals": 2.91, "btts_pct": 57, "home_win_pct": 43, "over25_pct": 58},
-    "MLS":               {"avg_goals": 2.80, "btts_pct": 50, "home_win_pct": 45, "over25_pct": 54},
-    "Brasileirao":       {"avg_goals": 2.52, "btts_pct": 48, "home_win_pct": 47, "over25_pct": 47},
-    "Mundial 2026":      {"avg_goals": 2.55, "btts_pct": 50, "home_win_pct": 42, "over25_pct": 49},
-    "Copa Libertadores": {"avg_goals": 2.40, "btts_pct": 46, "home_win_pct": 44, "over25_pct": 43},
-    "Copa Sudamericana": {"avg_goals": 2.32, "btts_pct": 45, "home_win_pct": 44, "over25_pct": 41},
-    "Liga Argentina":    {"avg_goals": 2.48, "btts_pct": 48, "home_win_pct": 48, "over25_pct": 46},
-    "Liga MX":           {"avg_goals": 2.62, "btts_pct": 50, "home_win_pct": 47, "over25_pct": 51},
+    "Premier League":    {"avg_goals": 2.82, "btts_pct": 55, "home_win_pct": 46, "over25_pct": 57, "under25_pct": 43, "draw_pct": 24, "style": "balanced"},
+    "LaLiga":            {"avg_goals": 2.57, "btts_pct": 52, "home_win_pct": 46, "over25_pct": 51, "under25_pct": 49, "draw_pct": 27, "style": "technical"},
+    "Bundesliga":        {"avg_goals": 3.18, "btts_pct": 61, "home_win_pct": 45, "over25_pct": 65, "under25_pct": 35, "draw_pct": 22, "style": "attacking"},
+    "Serie A":           {"avg_goals": 2.48, "btts_pct": 49, "home_win_pct": 44, "over25_pct": 47, "under25_pct": 53, "draw_pct": 28, "style": "defensive"},
+    "Ligue 1":           {"avg_goals": 2.68, "btts_pct": 52, "home_win_pct": 46, "over25_pct": 52, "under25_pct": 48, "draw_pct": 25, "style": "balanced"},
+    "Champions League":  {"avg_goals": 2.91, "btts_pct": 57, "home_win_pct": 43, "over25_pct": 58, "under25_pct": 42, "draw_pct": 25, "style": "attacking"},
+    "MLS":               {"avg_goals": 2.83, "btts_pct": 51, "home_win_pct": 46, "over25_pct": 55, "under25_pct": 45, "draw_pct": 23, "style": "attacking"},
+    "Brasileirao":       {"avg_goals": 2.50, "btts_pct": 48, "home_win_pct": 48, "over25_pct": 47, "under25_pct": 53, "draw_pct": 25, "style": "defensive"},
+    "Mundial 2026":      {"avg_goals": 2.55, "btts_pct": 50, "home_win_pct": 42, "over25_pct": 49, "under25_pct": 51, "draw_pct": 27, "style": "balanced"},
+    "Copa Libertadores": {"avg_goals": 2.38, "btts_pct": 45, "home_win_pct": 45, "over25_pct": 42, "under25_pct": 58, "draw_pct": 26, "style": "defensive"},
+    "Copa Sudamericana": {"avg_goals": 2.30, "btts_pct": 44, "home_win_pct": 45, "over25_pct": 39, "under25_pct": 61, "draw_pct": 27, "style": "defensive"},
+    "Liga Argentina":    {"avg_goals": 2.48, "btts_pct": 48, "home_win_pct": 49, "over25_pct": 46, "under25_pct": 54, "draw_pct": 25, "style": "defensive"},
+    "Liga MX":           {"avg_goals": 2.65, "btts_pct": 51, "home_win_pct": 47, "over25_pct": 52, "under25_pct": 48, "draw_pct": 24, "style": "balanced"},
 }
-_LEAGUE_AVG_DEFAULT = {"avg_goals": 2.5, "btts_pct": 48, "home_win_pct": 44, "over25_pct": 47}
+_LEAGUE_AVG_DEFAULT = {
+    "avg_goals": 2.5, "btts_pct": 48, "home_win_pct": 44,
+    "over25_pct": 47, "under25_pct": 53, "draw_pct": 26, "style": "balanced",
+}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1364,104 +1390,270 @@ def build_football_stats(fixtures):
     return stats
 
 
+
+# ── v4.5: Helpers probabilísticos Poisson ─────────────────────────────────────
+
+def _poisson_p(lam: float, k: int) -> float:
+    """P(X = k) para distribución de Poisson con parámetro lam."""
+    return math.exp(-lam) * (lam ** k) / math.factorial(k)
+
+
+def _poisson_over(lam: float, threshold: int) -> float:
+    """P(X > threshold) usando Poisson. Ej: _poisson_over(2.8, 2) = P(goles >= 3)."""
+    p_under_eq = sum(_poisson_p(lam, k) for k in range(threshold + 1))
+    return round(max(0.0, min(1.0, 1.0 - p_under_eq)), 4)
+
+
+def _poisson_btts(exp_h: float, exp_a: float) -> float:
+    """P(ambos equipos marcan >= 1 gol) vía Poisson independiente."""
+    p_home_scores = 1.0 - math.exp(-max(exp_h, 0.05))
+    p_away_scores = 1.0 - math.exp(-max(exp_a, 0.05))
+    return round(p_home_scores * p_away_scores, 4)
+
+
 def analyze_football_match(fix, hs, as_):
-    picks = []
+    """
+    v4.5: Análisis de partido de fútbol con probabilidades Poisson reales.
+    - Picks priorizados por estilo de liga (attacking / defensive / technical / balanced)
+    - Over/Under 2.5 vía Poisson (P(goles>=3) y P(goles<=2))
+    - BTTS vía Poisson independiente por equipo
+    - Máximo 3 picks/partido, sin duplicados entre mercados similares
+    - Reasoning específico con goles esperados y contexto de liga
+    """
+    league  = fix.get("league", "")
+    la      = LEAGUE_AVERAGES.get(league, _LEAGUE_AVG_DEFAULT)
+    style   = la.get("style", "balanced")
+    lg_name = league or "Liga"
+
+    # ── Sin stats individuales: picks por perfil de liga ──────────────────────
     if not hs or not as_:
-        # v4.4: usar promedios de liga en lugar de pick genérico
-        la = LEAGUE_AVERAGES.get(fix.get("league", ""), _LEAGUE_AVG_DEFAULT)
-        lg_name = fix.get("league", "Liga")
+        lam = la["avg_goals"]
+        over25_p  = _poisson_over(lam, 2)
+        under25_p = 1.0 - over25_p
+        btts_base = la["btts_pct"] / 100.0
         league_picks = []
 
-        if la["over25_pct"] >= 49:
-            prob = min(0.76, 0.48 + (la["over25_pct"] - 40) * 0.009)
+        if style == "attacking":
+            # Bundesliga / MLS / UCL: Over 2.5 es pick principal
+            if over25_p >= 0.50:
+                league_picks.append({
+                    "type": "Over 2.5 Goles",
+                    "confidence": min(77, int(over25_p * 98)),
+                    "our_prob": round(over25_p, 3),
+                    "est_odds": est_odds(over25_p),
+                    "value": None,
+                    "reasoning": (f"{lg_name} ({style}): media {lam:.2f} goles/j — Poisson "
+                                  f"estima {over25_p*100:.0f}% de partidos Over 2.5."),
+                    "data_quality": "medium",
+                })
+            if btts_base >= 0.53 and la["btts_pct"] >= 54:
+                prob_btts = min(0.74, btts_base + 0.01)
+                league_picks.append({
+                    "type": "Ambos Marcan (BTTS)",
+                    "confidence": min(74, int(prob_btts * 100)),
+                    "our_prob": round(prob_btts, 3),
+                    "est_odds": est_odds(prob_btts),
+                    "value": None,
+                    "reasoning": (f"{lg_name}: {la['btts_pct']}% histórico de BTTS. "
+                                  f"Liga ofensiva — ambos equipos suelen anotar."),
+                    "data_quality": "medium",
+                })
+
+        elif style == "defensive":
+            # Serie A / Copa Lib / Brasileirao: Under 2.5 o DC conservadora
+            if under25_p >= 0.52:
+                league_picks.append({
+                    "type": "Under 2.5 Goles",
+                    "confidence": min(74, int(under25_p * 98)),
+                    "our_prob": round(under25_p, 3),
+                    "est_odds": est_odds(under25_p),
+                    "value": None,
+                    "reasoning": (f"{lg_name} ({style}): media {lam:.2f} goles/j — Poisson "
+                                  f"estima {under25_p*100:.0f}% de partidos Under 2.5."),
+                    "data_quality": "medium",
+                })
+            if la["draw_pct"] >= 26:
+                prob_x = min(0.66, la["draw_pct"] / 100.0 + 0.08)
+                league_picks.append({
+                    "type": "Empate (X)",
+                    "confidence": min(66, int(prob_x * 100)),
+                    "our_prob": round(prob_x, 3),
+                    "est_odds": est_odds(prob_x),
+                    "value": None,
+                    "reasoning": (f"{lg_name}: {la['draw_pct']}% de partidos terminan en empate. "
+                                  f"Liga táctica, resultado cerrado común."),
+                    "data_quality": "medium",
+                })
+
+        elif style == "technical":
+            # LaLiga: Over 2.5 si la media lo soporta, si no DC local
+            if over25_p >= 0.50:
+                league_picks.append({
+                    "type": "Over 2.5 Goles",
+                    "confidence": min(73, int(over25_p * 97)),
+                    "our_prob": round(over25_p, 3),
+                    "est_odds": est_odds(over25_p),
+                    "value": None,
+                    "reasoning": (f"{lg_name}: media {lam:.2f} goles/j, Over 2.5 en "
+                                  f"{la['over25_pct']}% de partidos histórico."),
+                    "data_quality": "medium",
+                })
+            prob_dc = min(0.68, la["home_win_pct"] / 100.0 + 0.05)
             league_picks.append({
-                "type": "Over 2.5 Goles",
-                "confidence": int(prob * 100),
-                "our_prob": round(prob, 3),
-                "est_odds": est_odds(prob),
+                "type": "Doble Chance Local (1X)",
+                "confidence": min(68, int(prob_dc * 100)),
+                "our_prob": round(prob_dc, 3),
+                "est_odds": est_odds(prob_dc * 0.72),
                 "value": None,
-                "reasoning": (f"{lg_name}: media {la['avg_goals']:.1f} goles/j, "
-                              f"{la['over25_pct']}% partidos Over 2.5."),
+                "reasoning": (f"{lg_name}: ventaja local histórica {la['home_win_pct']}%. "
+                              f"1X cubre victoria y empate en partido parejo."),
                 "data_quality": "medium",
             })
 
-        if la["btts_pct"] >= 49:
-            prob = min(0.74, la["btts_pct"] / 100 + 0.02)
-            league_picks.append({
-                "type": "Ambos Marcan (BTTS)",
-                "confidence": int(prob * 100),
-                "our_prob": round(prob, 3),
-                "est_odds": est_odds(prob),
-                "value": None,
-                "reasoning": (f"{lg_name}: {la['btts_pct']}% de partidos con BTTS histórico."),
-                "data_quality": "medium",
-            })
+        else:  # balanced (PL, Ligue 1, MX, Mundial)
+            if over25_p >= 0.49:
+                league_picks.append({
+                    "type": "Over 2.5 Goles",
+                    "confidence": min(75, int(over25_p * 97)),
+                    "our_prob": round(over25_p, 3),
+                    "est_odds": est_odds(over25_p),
+                    "value": None,
+                    "reasoning": (f"{lg_name}: media {lam:.2f} goles/j — "
+                                  f"{la['over25_pct']}% Over 2.5 histórico de liga."),
+                    "data_quality": "medium",
+                })
+            if btts_base >= 0.51:
+                prob_btts = min(0.72, btts_base + 0.01)
+                league_picks.append({
+                    "type": "Ambos Marcan (BTTS)",
+                    "confidence": min(72, int(prob_btts * 100)),
+                    "our_prob": round(prob_btts, 3),
+                    "est_odds": est_odds(prob_btts),
+                    "value": None,
+                    "reasoning": (f"{lg_name}: {la['btts_pct']}% de partidos con BTTS. "
+                                  f"Liga equilibrada — ambos equipos activos en ataque."),
+                    "data_quality": "medium",
+                })
 
-        if la["home_win_pct"] >= 45:
-            prob = min(0.68, la["home_win_pct"] / 100 + 0.04)
-            league_picks.append({
-                "type": f"Doble Chance Local (1X)",
-                "confidence": int(prob * 100),
-                "our_prob": round(prob, 3),
-                "est_odds": est_odds(prob * 0.72),
-                "value": None,
-                "reasoning": (f"{lg_name}: {la['home_win_pct']}% victorias local histórico. "
-                              f"Doble Chance cubre empate+victoria."),
-                "data_quality": "medium",
-            })
-
-        # Filtrar por confianza mínima; fallback Over 1.5 si nada pasa
         league_picks = [p for p in league_picks if p["confidence"] >= MIN_CONFIDENCE]
         if not league_picks:
+            # Fallback universal: Over 1.5 (muy conservador, ~80% tasa histórica)
             league_picks.append({
                 "type": "Over 1.5 Goles",
                 "confidence": 63,
-                "our_prob": 0.67,
-                "est_odds": est_odds(0.67),
+                "our_prob": 0.68,
+                "est_odds": est_odds(0.68),
                 "value": None,
-                "reasoning": (f"{lg_name}: {la['avg_goals']:.1f} goles/j promedio de liga. "
-                              f"Pick conservador sin stats individuales."),
+                "reasoning": (f"{lg_name}: {lam:.2f} goles/j promedio — pick conservador "
+                              f"sin stats individuales disponibles."),
                 "data_quality": "low",
             })
-        return league_picks
+        return league_picks[:3]
 
-    gf_h = hs.get("goals_for_pg", 0); ga_h = hs.get("goals_against_pg", 0)
-    gf_a = as_.get("goals_for_pg", 0); ga_a = as_.get("goals_against_pg", 0)
-    avg  = (gf_h + ga_h + gf_a + ga_a) / 2
-    real = get_real_odds(fix.get("odds_key", ""), fix["home"], fix["away"])
+    # ── Con stats individuales: cálculos Poisson reales ───────────────────────
+    gf_h = hs.get("goals_for_pg", 0)
+    ga_h = hs.get("goals_against_pg", 0)
+    gf_a = as_.get("goals_for_pg", 0)
+    ga_a = as_.get("goals_against_pg", 0)
 
-    if avg >= 2.7:
-        prob = min(0.82, 0.50 + (avg - 2.0) * 0.12)
-        p = {
-            "type": "Over 2.5 Goles", "confidence": int(prob * 100),
-            "our_prob": round(prob, 3), "est_odds": est_odds(prob), "value": None,
-            "reasoning": (f"{fix['home']} {gf_h:.1f}/j ataque, {fix['away']} concede "
-                          f"{ga_a:.1f}/j. Total ~{avg:.1f} goles/partido."),
-            "data_quality": "high",
-        }
-        picks.append(p)
+    # Expected goals (promedio entre ataque propio y defensa rival)
+    exp_h   = (gf_h + ga_a) / 2.0   # goles esperados del equipo local
+    exp_a   = (gf_a + ga_h) / 2.0   # goles esperados del visitante
+    lam_tot = exp_h + exp_a          # total esperado del partido
 
-    ph = min(0.9, max(0.4, gf_h / 1.5)); pa = min(0.9, max(0.4, gf_a / 1.5))
-    btts = round(ph * pa, 3)
-    if btts >= 0.55:
-        picks.append({
-            "type": "Ambos Marcan (BTTS)", "confidence": min(80, int(btts * 100)),
-            "our_prob": btts, "est_odds": est_odds(btts), "value": None,
-            "reasoning": f"{fix['home']} {gf_h:.1f}/j, {fix['away']} {gf_a:.1f}/j.",
-            "data_quality": "high",
-        })
+    # Probabilidades Poisson
+    over25_prob  = _poisson_over(lam_tot, 2)   # P(goles >= 3)
+    under25_prob = 1.0 - over25_prob            # P(goles <= 2)
+    btts_prob    = _poisson_btts(exp_h, exp_a)  # P(ambos marcan >= 1)
 
-    hs_str = hs.get("win_rate", 33) + hs.get("form_pts", 7) * 2 + 10
-    as_str = as_.get("win_rate", 33) + as_.get("form_pts", 7) * 2
+    # Fuerza relativa para 1X2 / Doble Chance
+    hs_str = hs.get("win_rate", 33) + hs.get("form_pts", 7) * 2.5 + 10
+    as_str = as_.get("win_rate", 33) + as_.get("form_pts", 7) * 2.5
     diff   = hs_str - as_str
 
-    if diff >= 22:
-        prob = min(0.78, 0.52 + diff * 0.008)
+    real   = get_real_odds(fix.get("odds_key", ""), fix["home"], fix["away"])
+    picks  = []
+
+    # ── Mercados de goles (Over / Under / BTTS) ───────────────────────────────
+    # Prioridad según estilo de liga
+    if style in ("attacking", "balanced", "technical"):
+        # Intentar Over 2.5 primero
+        if over25_prob >= 0.50:
+            conf = min(80, int(over25_prob * 100 * 0.97))
+            picks.append({
+                "type": "Over 2.5 Goles",
+                "confidence": conf,
+                "our_prob": round(over25_prob, 3),
+                "est_odds": est_odds(over25_prob),
+                "value": None,
+                "reasoning": (f"XG local {exp_h:.2f} + XG visitante {exp_a:.2f} = {lam_tot:.2f} esperados. "
+                              f"Poisson P(≥3 goles)={over25_prob*100:.0f}%. "
+                              f"{fix['home']} anota {gf_h:.1f}/j y concede {ga_h:.1f}/j."),
+                "data_quality": "high",
+            })
+    else:  # defensive
+        # Intentar Under 2.5 primero
+        if under25_prob >= 0.52:
+            conf = min(78, int(under25_prob * 100 * 0.97))
+            picks.append({
+                "type": "Under 2.5 Goles",
+                "confidence": conf,
+                "our_prob": round(under25_prob, 3),
+                "est_odds": est_odds(under25_prob),
+                "value": None,
+                "reasoning": (f"XG local {exp_h:.2f} + XG visitante {exp_a:.2f} = {lam_tot:.2f} esperados. "
+                              f"Poisson P(≤2 goles)={under25_prob*100:.0f}%. "
+                              f"Liga defensiva: {fix['home']} concede {ga_h:.1f}/j, "
+                              f"{fix['away']} {ga_a:.1f}/j."),
+                "data_quality": "high",
+            })
+        # Añadir Over 2.5 en segundo plano si la probabilidad es razonable
+        if over25_prob >= 0.52 and len(picks) == 0:
+            conf = min(75, int(over25_prob * 100 * 0.95))
+            picks.append({
+                "type": "Over 2.5 Goles",
+                "confidence": conf,
+                "our_prob": round(over25_prob, 3),
+                "est_odds": est_odds(over25_prob),
+                "value": None,
+                "reasoning": (f"XG={lam_tot:.2f}. Pese al estilo defensivo de {lg_name}, "
+                              f"Poisson indica {over25_prob*100:.0f}% de probabilidad de Over 2.5."),
+                "data_quality": "high",
+            })
+
+    # BTTS — solo si el mercado es significativo y no contradice el pick de goles
+    if btts_prob >= 0.56:
+        # No añadir BTTS si ya hay Under 2.5 (son contradictorios en partidos cerrados)
+        has_under = any(p["type"] == "Under 2.5 Goles" for p in picks)
+        if not has_under:
+            conf = min(78, int(btts_prob * 100 * 0.96))
+            picks.append({
+                "type": "Ambos Marcan (BTTS)",
+                "confidence": conf,
+                "our_prob": round(btts_prob, 3),
+                "est_odds": est_odds(btts_prob),
+                "value": None,
+                "reasoning": (f"P(local marca)={1-math.exp(-exp_h)*100:.0f}%, "
+                              f"P(visitante marca)={1-math.exp(-exp_a)*100:.0f}%. "
+                              f"{fix['home']} anota {gf_h:.1f}/j; {fix['away']} {gf_a:.1f}/j."),
+                "data_quality": "high",
+            })
+
+    # ── 1X2 directo ───────────────────────────────────────────────────────────
+    if diff >= 24:
+        # Probabilidad via función logística (más suave que lineal)
+        raw_p = 1.0 / (1.0 + math.exp(-diff / 28.0))
+        prob  = round(0.50 + (raw_p - 0.50) * 0.72, 3)  # escala conservadora
+        prob  = min(0.76, max(0.55, prob))
         p = {
-            "type": f"Victoria {fix['home']}", "confidence": int(prob * 100),
-            "our_prob": round(prob, 3), "est_odds": est_odds(prob), "value": None,
+            "type": f"Victoria {fix['home']}",
+            "confidence": int(prob * 100),
+            "our_prob": prob,
+            "est_odds": est_odds(prob),
+            "value": None,
             "reasoning": (f"{fix['home']}: {hs.get('win_rate', 0):.0f}% victorias, "
-                          f"forma {hs.get('form', '?')}."),
+                          f"forma {hs.get('form', '?')} ({hs.get('form_pts', 0)} pts últimos 5). "
+                          f"Ventaja sobre {fix['away']}: {diff:.0f} pts fuerza."),
             "data_quality": "high",
         }
         if real and real.get("home_odds"):
@@ -1469,13 +1661,19 @@ def analyze_football_match(fix, hs, as_):
             p["value"]    = edge(prob, real["home_odds"])
             p["real_odds_source"] = True
         picks.append(p)
-    elif diff <= -22:
-        prob = min(0.74, 0.50 + abs(diff) * 0.007)
+    elif diff <= -24:
+        raw_p = 1.0 / (1.0 + math.exp(-abs(diff) / 28.0))
+        prob  = round(0.50 + (raw_p - 0.50) * 0.68, 3)
+        prob  = min(0.74, max(0.54, prob))
         p = {
-            "type": f"Victoria {fix['away']}", "confidence": int(prob * 100),
-            "our_prob": round(prob, 3), "est_odds": est_odds(prob), "value": None,
+            "type": f"Victoria {fix['away']}",
+            "confidence": int(prob * 100),
+            "our_prob": prob,
+            "est_odds": est_odds(prob),
+            "value": None,
             "reasoning": (f"{fix['away']}: {as_.get('win_rate', 0):.0f}% victorias, "
-                          f"forma {as_.get('form', '?')}."),
+                          f"forma {as_.get('form', '?')} ({as_.get('form_pts', 0)} pts). "
+                          f"Ventaja visitante: {abs(diff):.0f} pts — inusual pero estadísticamente clara."),
             "data_quality": "high",
         }
         if real and real.get("away_odds"):
@@ -1484,55 +1682,79 @@ def analyze_football_match(fix, hs, as_):
             p["real_odds_source"] = True
         picks.append(p)
 
-    if abs(diff) <= 10:
-        da = (hs.get("draw_rate", 25) + as_.get("draw_rate", 25)) / 2
-        if da >= 24:
-            prob = min(0.63, da / 100 + 0.08)
-            p = {
-                "type": "Empate (X)", "confidence": int(prob * 100),
-                "our_prob": round(prob, 3), "est_odds": est_odds(prob), "value": None,
-                "reasoning": (f"Equipos igualados. Tasas de empate "
-                              f"{hs.get('draw_rate', 25):.0f}% / {as_.get('draw_rate', 25):.0f}%."),
-                "data_quality": "medium",
-            }
-            if real and real.get("draw_odds"):
-                p["est_odds"] = real["draw_odds"]
-                p["value"]    = edge(prob, real["draw_odds"])
-                p["real_odds_source"] = True
-            picks.append(p)
+    # ── Empate ────────────────────────────────────────────────────────────────
+    # Activar si equipos parejos Y liga con tasa de empate alta (style=defensive/technical)
+    if abs(diff) <= 10 and style in ("defensive", "technical", "balanced"):
+        da = (hs.get("draw_rate", la.get("draw_pct", 25))
+              + as_.get("draw_rate", la.get("draw_pct", 25))) / 2.0
+        league_draw = la.get("draw_pct", 25)
+        if da >= 23 or league_draw >= 26:
+            base_draw = max(da, league_draw) / 100.0
+            prob = round(min(0.62, base_draw + 0.06), 3)
+            if prob >= 0.62:
+                p = {
+                    "type": "Empate (X)",
+                    "confidence": int(prob * 100),
+                    "our_prob": prob,
+                    "est_odds": est_odds(prob),
+                    "value": None,
+                    "reasoning": (f"Equipos muy igualados (diff fuerza {abs(diff):.0f}). "
+                                  f"Tasa empate: {fix['home']} {hs.get('draw_rate', 25):.0f}%, "
+                                  f"{fix['away']} {as_.get('draw_rate', 25):.0f}%. "
+                                  f"{lg_name} promedio {league_draw}% empates."),
+                    "data_quality": "medium",
+                }
+                if real and real.get("draw_odds"):
+                    p["est_odds"] = real["draw_odds"]
+                    p["value"]    = edge(prob, real["draw_odds"])
+                    p["real_odds_source"] = True
+                picks.append(p)
 
-    # v4.4: Double Chance cuando hay ventaja moderada (no suficiente para 1X2)
-    if 10 <= abs(diff) < 22:
+    # ── Double Chance — ventaja moderada (12-23 pts diff) ─────────────────────
+    if 12 <= abs(diff) < 24:
         if diff > 0:
             dc_type = f"Doble Chance {fix['home']} (1X)"
-            dc_prob = min(0.78, 0.60 + diff * 0.007)
-            dc_ctx  = f"{fix['home']}: {hs.get('win_rate', 0):.0f}% victorias, forma {hs.get('form','?')}"
+            raw_p   = 1.0 / (1.0 + math.exp(-diff / 22.0))
+            dc_prob = round(min(0.78, 0.62 + (raw_p - 0.5) * 0.55), 3)
+            dc_ctx  = (f"{fix['home']}: {hs.get('win_rate', 0):.0f}% victorias, "
+                       f"forma {hs.get('form', '?')} ({hs.get('form_pts', 0)} pts). "
+                       f"Ventaja local de {diff:.0f} pts → 1X más seguro que 1 directo.")
         else:
             dc_type = f"Doble Chance {fix['away']} (X2)"
-            dc_prob = min(0.76, 0.60 + abs(diff) * 0.006)
-            dc_ctx  = f"{fix['away']}: {as_.get('win_rate', 0):.0f}% victorias, forma {as_.get('form','?')}"
+            raw_p   = 1.0 / (1.0 + math.exp(-abs(diff) / 22.0))
+            dc_prob = round(min(0.76, 0.60 + (raw_p - 0.5) * 0.52), 3)
+            dc_ctx  = (f"{fix['away']}: {as_.get('win_rate', 0):.0f}% victorias, "
+                       f"forma {as_.get('form', '?')} ({as_.get('form_pts', 0)} pts). "
+                       f"Ventaja visitante {abs(diff):.0f} pts — X2 cubre victoria o empate.")
         picks.append({
             "type": dc_type,
             "confidence": int(dc_prob * 100),
-            "our_prob": round(dc_prob, 3),
-            "est_odds": round(est_odds(dc_prob * 0.70), 2),
+            "our_prob": dc_prob,
+            "est_odds": round(est_odds(dc_prob * 0.72), 2),
             "value": None,
-            "reasoning": (f"{dc_ctx}. Ventaja {'local' if diff > 0 else 'visitante'} moderada → "
-                         f"Doble Chance más seguro que 1X2 directo."),
+            "reasoning": dc_ctx,
             "data_quality": "medium",
         })
 
-    if not picks and avg >= 2.1:
-        prob = min(0.76, 0.54 + (avg - 2.0) * 0.10)
+    # ── Fallback: Over 1.5 si sin picks y promedio de goles mínimo ────────────
+    if not picks and lam_tot >= 2.0:
+        prob = round(min(0.75, 0.54 + (lam_tot - 2.0) * 0.08), 3)
         picks.append({
-            "type": "Over 1.5 Goles", "confidence": int(prob * 100),
-            "our_prob": round(prob, 3), "est_odds": est_odds(prob), "value": None,
-            "reasoning": f"Promedio {avg:.1f} goles/partido esperados.",
+            "type": "Over 1.5 Goles",
+            "confidence": int(prob * 100),
+            "our_prob": prob,
+            "est_odds": est_odds(prob),
+            "value": None,
+            "reasoning": (f"XG total esperado: {lam_tot:.2f} goles "
+                          f"({fix['home']} {exp_h:.2f} + {fix['away']} {exp_a:.2f}). "
+                          f"Pick conservador — {over25_prob*100:.0f}% no supera umbral Over 2.5."),
             "data_quality": "medium",
         })
 
+    # Filtrar por confianza mínima, ordenar, limitar a 3
+    picks = [p for p in picks if p["confidence"] >= MIN_CONFIDENCE]
     picks.sort(key=lambda x: (x["confidence"], x.get("value") or -99), reverse=True)
-    return picks
+    return picks[:3]
 
 
 def get_football_picks():
