@@ -12,7 +12,7 @@ from value_bot.analysis.parlays import build_parlays
 from value_bot.scrapers.espn import get_upcoming_nba_events
 from value_bot.telegram_sender import build_message, send_telegram
 from value_bot.store import store
-from value_bot.db import init_db, save_picks
+from value_bot.db import init_db, save_picks, resolve_nba_picks_auto
 
 try:
     from value_bot.sports.nba import NBA_API_OK as _NBA_API_OK
@@ -52,12 +52,20 @@ async def main():
 
     await send_telegram(message)
 
-    # Persistir picks en SQLite para backtesting / deduplicación futura
     run_date = datetime.now().strftime("%Y-%m-%d")
-    save_picks(run_date, all_picks)
 
-    log.info("═══ ✓ Enviado | ⚽%d 🏀%d | Parlays:%d ═══",
-             len(football_picks), len(nba_picks), len(parlays))
+    # Persistir picks del día
+    inserted = save_picks(run_date, all_picks)
+
+    # Resolver automáticamente picks de NBA del día anterior via ESPN
+    from datetime import timedelta
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    resolved  = resolve_nba_picks_auto(yesterday)
+    if resolved:
+        log.info("Auto-resolved %d NBA picks de %s", resolved, yesterday)
+
+    log.info("═══ ✓ Enviado | ⚽%d 🏀%d | Parlays:%d | DB:%d picks ═══",
+             len(football_picks), len(nba_picks), len(parlays), inserted)
 
 
 if __name__ == "__main__":
