@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-🏆 Value Bot Pro v4.5 — Multi-Deporte + Playwright Stealth
+🏆 Value Bot Pro v4.6 — Multi-Deporte + Playwright Stealth
 ══════════════════════════════════════════════════════════════════
 CAMBIOS v4.3 vs v4.2:
   ✅ Playwright stealth scraping  → Capa 4 (Flashscore NBA + Fútbol)
@@ -10,7 +10,7 @@ CAMBIOS v4.3 vs v4.2:
   ✅ Scroll infinito               → carga fixtures adicionales
   ✅ Fix nba_api per_mode_simple   → try/except TypeError (compatibility)
 
-CAMBIOS v4.5 vs v4.4:
+CAMBIOS v4.6 vs v4.4:
   ✅ FIX CRITICO import os + dotenv block (faltaba → NameError en os.getenv)
   ✅ Probabilidades Poisson reales  → Over/Under y BTTS matemáticamente correctos
   ✅ Under 2.5 Goles               → nuevo mercado para ligas defensivas
@@ -184,7 +184,7 @@ FALLBACK_LEAGUES_FOOTBALL = {
     "Liga MX":           {"afl": 262, "season": 2025, "flag": "🇲🇽", "odds": None},
 }
 
-# Promedios de liga — v4.5 (+ under25_pct, draw_pct, style para picks inteligentes)
+# Promedios de liga — v4.6 (+ under25_pct, draw_pct, style para picks inteligentes)
 # Campos:  avg_goals  btts_pct  home_win_pct  over25_pct  under25_pct  draw_pct  style
 # style: "attacking" | "defensive" | "technical" | "balanced"
 LEAGUE_AVERAGES: dict = {
@@ -1391,7 +1391,7 @@ def build_football_stats(fixtures):
 
 
 
-# ── v4.5: Helpers probabilísticos Poisson ─────────────────────────────────────
+# ── v4.6: Helpers probabilísticos Poisson ─────────────────────────────────────
 
 def _poisson_p(lam: float, k: int) -> float:
     """P(X = k) para distribución de Poisson con parámetro lam."""
@@ -1413,7 +1413,7 @@ def _poisson_btts(exp_h: float, exp_a: float) -> float:
 
 def analyze_football_match(fix, hs, as_):
     """
-    v4.5: Análisis de partido de fútbol con probabilidades Poisson reales.
+    v4.6: Análisis de partido de fútbol con probabilidades Poisson reales.
     - Picks priorizados por estilo de liga (attacking / defensive / technical / balanced)
     - Over/Under 2.5 vía Poisson (P(goles>=3) y P(goles<=2))
     - BTTS vía Poisson independiente por equipo
@@ -1426,7 +1426,7 @@ def analyze_football_match(fix, hs, as_):
     lg_name = league or "Liga"
 
     # ── Sin stats individuales: picks basados en historicos de liga ──────────────
-    # NOTA v4.5b: No usar Poisson aquí — sin XG individual, Poisson sobre avg_goals
+    # NOTA v4.6b: No usar Poisson aquí — sin XG individual, Poisson sobre avg_goals
     # de liga produce prob ~54% que tras descuento cae bajo MIN_CONFIDENCE=62.
     # Usar over25_pct / btts_pct / under25_pct directamente con boost por estilo.
     if not hs or not as_:
@@ -1447,9 +1447,9 @@ def analyze_football_match(fix, hs, as_):
                     "our_prob": round(o25 / 100, 3),
                     "est_odds": est_odds(o25 / 100),
                     "value": None,
-                    "reasoning": (f"{lg_name}: {o25}% de partidos van Over 2.5 históricamente "
-                                  f"(media {lam:.2f} goles/j). Liga ofensiva — "
-                                  f"sin stats individuales disponibles."),
+                    "reasoning": (f"{fix['home']} vs {fix['away']} | "
+                                  f"{lg_name}: {o25}% Over 2.5 históricamente "
+                                  f"(media {lam:.2f} goles/j). Liga ofensiva, sin stats individuales."),
                     "data_quality": "medium",
                 })
             if btts >= 55:
@@ -1460,8 +1460,9 @@ def analyze_football_match(fix, hs, as_):
                     "our_prob": round(btts / 100, 3),
                     "est_odds": est_odds(btts / 100),
                     "value": None,
-                    "reasoning": (f"{lg_name}: {btts}% histórico de BTTS. "
-                                  f"Liga ofensiva — ambos equipos suelen anotar."),
+                    "reasoning": (f"{fix['home']} vs {fix['away']} | "
+                                  f"{lg_name}: {btts}% BTTS hist. "
+                                  f"Liga ofensiva — ambos equipos tienen vocación goleadora."),
                     "data_quality": "medium",
                 })
 
@@ -1475,8 +1476,9 @@ def analyze_football_match(fix, hs, as_):
                     "our_prob": round(u25 / 100, 3),
                     "est_odds": est_odds(u25 / 100),
                     "value": None,
-                    "reasoning": (f"{lg_name}: {u25}% de partidos van Under 2.5 históricamente "
-                                  f"(media {lam:.2f} goles/j). Liga táctica y defensiva."),
+                    "reasoning": (f"{fix['home']} vs {fix['away']} | "
+                                  f"{lg_name}: {u25}% Under 2.5 hist. "
+                                  f"(media {lam:.2f} goles/j). Partido táctico esperado."),
                     "data_quality": "medium",
                 })
             if draw >= 26:
@@ -1487,8 +1489,9 @@ def analyze_football_match(fix, hs, as_):
                     "our_prob": round(draw / 100 + 0.08, 3),
                     "est_odds": est_odds(draw / 100 + 0.06),
                     "value": None,
-                    "reasoning": (f"{lg_name}: {draw}% de partidos terminan en empate. "
-                                  f"Liga táctica — resultados cerrados frecuentes."),
+                    "reasoning": (f"{fix['home']} vs {fix['away']} | "
+                                  f"{lg_name}: {draw}% empates hist. "
+                                  f"Equipos de nivel similar en liga táctica."),
                     "data_quality": "medium",
                 })
 
@@ -1770,15 +1773,22 @@ def analyze_football_match(fix, hs, as_):
 
 
 def get_football_picks():
-    """v4.4: múltiples picks por fixture (igual que NBA). Agrupados por partido."""
-    fixtures = collect_football_fixtures()
-    stats    = build_football_stats(fixtures)
+    """
+    v4.6: picks de fútbol con deduplicación inteligente.
+    - Máximo 2 picks del mismo (liga × tipo) → evita 6× Under 2.5 Copa Lib
+    - Prioriza value bets y confianza alta
+    - Máximo MAX_PICKS_SPORT resultados finales
+    """
+    fixtures  = collect_football_fixtures()
+    stats     = build_football_stats(fixtures)
     all_picks = []
     for fix in fixtures:
         analysis = analyze_football_match(fix, stats.get(fix["home"]), stats.get(fix["away"]))
         for pick in analysis:
             if pick["confidence"] >= MIN_CONFIDENCE:
                 all_picks.append({**fix, **pick})
+
+    # Ordenar: value bets primero, luego por confianza
     all_picks.sort(
         key=lambda x: (
             1 if (x.get("value") and x["value"] >= VALUE_THRESHOLD) else 0,
@@ -1786,8 +1796,20 @@ def get_football_picks():
         ),
         reverse=True,
     )
-    result = all_picks[:MAX_PICKS_SPORT]
-    log.info("Football picks: %d (de %d fixtures)", len(result), len(fixtures))
+
+    # v4.6: Deduplicar — máximo 2 picks con mismo (liga × tipo de mercado)
+    # Evita 6 "Under 2.5 Copa Lib" idénticos cuando no hay stats individuales
+    from collections import defaultdict
+    lg_type_count: dict = defaultdict(int)
+    deduped = []
+    for p in all_picks:
+        key = (p.get("league", ""), p.get("type", ""))
+        if lg_type_count[key] < 2:
+            deduped.append(p)
+            lg_type_count[key] += 1
+
+    result = deduped[:MAX_PICKS_SPORT]
+    log.info("Football picks: %d (de %d fixtures, %d candidatos)", len(result), len(fixtures), len(all_picks))
     return result
 
 
@@ -1797,18 +1819,27 @@ def get_football_picks():
 
 def build_parlays(all_picks):
     """
-    v4.4: Parlays inteligentes con preferencia same-sport.
-    Prioridad: Fútbol > NBA > Mixto (solo si confianza muy alta).
+    v4.6: Parlays selectivos con reglas de calidad.
+    - Mínimo conf 68% para piernas de fútbol
+    - Máximo 1 pick por liga en el mismo parlay (evita 3x Copa Lib)
+    - Parlay doble: prob combinada >= 40%
+    - Parlay triple: prob combinada >= 28%
+    - Prioridad: Fútbol diverso > NBA > Mixto alta confianza
     """
-    pool    = [p for p in all_picks if p["confidence"] >= MIN_CONF_PARLAY]
-    hi_pool = [p for p in all_picks if p["confidence"] >= 68]  # alta confianza
-    if len(pool) < 2:
-        log.info("Parlays: pool insuficiente (%d picks)", len(pool))
+    MIN_CONF_P_FB  = 68    # fútbol: solo picks de calidad alta en parlays
+    MIN_PROB_2     = 0.38  # doble: al menos 38% prob combinada
+    MIN_PROB_3     = 0.27  # triple: al menos 27% prob combinada
+
+    hi_pool  = [p for p in all_picks if p["confidence"] >= MIN_CONF_P_FB]
+    pool_nba = [p for p in all_picks if p.get("sport") == "nba" and p["confidence"] >= MIN_CONF_PARLAY]
+    fp_hi    = [p for p in hi_pool if p.get("sport") == "football"]
+    nba_pool = pool_nba  # alias
+
+    if len(hi_pool) + len(pool_nba) < 2:
+        log.info("Parlays: pool insuficiente (%d picks hi + %d nba)", len(hi_pool), len(pool_nba))
         return []
 
     parlays = []
-    fp_pool  = [p for p in pool if p.get("sport") == "football"]
-    nba_pool = [p for p in pool if p.get("sport") == "nba"]
 
     def combined_stats(legs):
         o = pr = 1.0
@@ -1820,18 +1851,26 @@ def build_parlays(all_picks):
     def is_multi_sport(legs):
         return len(set(l.get("sport", "?") for l in legs)) > 1
 
-    def best_pair(picks_list, same_sport_only=False, require_diff_game=True):
-        """Encuentra la mejor combinación de 2 piernas."""
+    def leagues_diverse(legs):
+        """True si ninguna liga se repite en las piernas del parlay."""
+        lgs = [l.get("league", l.get("sport", "?")) for l in legs]
+        return len(lgs) == len(set(lgs))
+
+    def best_pair(picks_list, require_diff_game=True, require_div_league=True, min_prob=MIN_PROB_2):
+        """Mejor par con restricciones de diversidad y prob mínima."""
         best = None
         best_score = -1
         for i in range(len(picks_list)):
             for j in range(i + 1, len(picks_list)):
                 l1, l2 = picks_list[i], picks_list[j]
-                if same_sport_only and l1.get("sport") != l2.get("sport"):
-                    continue
                 same_game = (l1.get("home") == l2.get("home") and
                              l1.get("away") == l2.get("away"))
                 if require_diff_game and same_game:
+                    continue
+                if require_div_league and not leagues_diverse([l1, l2]):
+                    continue
+                prob = l1.get("our_prob", 0.65) * l2.get("our_prob", 0.65)
+                if prob < min_prob:
                     continue
                 score = l1["confidence"] + l2["confidence"]
                 if score > best_score:
@@ -1839,47 +1878,60 @@ def build_parlays(all_picks):
                     best_score = score
         return best
 
-    def best_triple(picks_list):
-        """Encuentra la mejor combinación de 3 piernas mismo deporte."""
+    def best_triple(picks_list, require_div_league=True, min_prob=MIN_PROB_3):
+        """Mejor trío con diversidad de liga y prob mínima."""
         best = None
         best_score = -1
         for i in range(len(picks_list)):
             for j in range(i + 1, len(picks_list)):
                 for k in range(j + 1, len(picks_list)):
                     legs  = [picks_list[i], picks_list[j], picks_list[k]]
+                    # No mismo partido
+                    games = [(l.get("home"), l.get("away")) for l in legs]
+                    if len(set(games)) < len(games):
+                        continue
+                    if require_div_league and not leagues_diverse(legs):
+                        continue
+                    prob = 1.0
+                    for l in legs:
+                        prob *= l.get("our_prob", 0.65)
+                    if prob < min_prob:
+                        continue
                     score = sum(l["confidence"] for l in legs)
                     if score > best_score:
                         best = legs
                         best_score = score
         return best
 
-    # ── Parlay 2: mismo deporte primero ──────────────────────────────────────
+    # ── Parlay 2: fútbol diverso > NBA > mixto > relajar restricciones ────────
     best_2 = (
-        best_pair(fp_pool)                          # 1. Fútbol mismo deporte
-        or best_pair(fp_pool, require_diff_game=False)
-        or best_pair(nba_pool)                      # 2. NBA mismo deporte
-        or best_pair(nba_pool, require_diff_game=False)
-        or best_pair(hi_pool)                       # 3. Mixto, solo alta confianza
-        or best_pair(pool)                          # 4. Cualquier combinación
-        or (pool[:2] if len(pool) >= 2 else None)  # 5. Fallback
+        best_pair(fp_hi)                                           # 1. Fútbol hi-conf, ligas distintas
+        or best_pair(fp_hi, require_div_league=False)              # 2. Fútbol hi-conf, misma liga OK
+        or best_pair(nba_pool)                                     # 3. NBA
+        or best_pair(hi_pool, min_prob=MIN_PROB_2 - 0.05)         # 4. Mixto alta confianza
+        or best_pair(hi_pool, require_div_league=False,
+                     min_prob=MIN_PROB_2 - 0.08)                   # 5. Relajado
     )
 
     if best_2:
         co, cp = combined_stats(best_2)
-        multi   = is_multi_sport(best_2)
-        sport_tag = "" if not multi else " MIXTO"
-        if best_2[0].get("sport") == "football":
-            label = f"⚡ PARLAY DOBLE ⚽{sport_tag}"
-        else:
-            label = f"⚡ PARLAY DOBLE 🏀{sport_tag}"
+        multi     = is_multi_sport(best_2)
+        sport_tag = " MIXTO" if multi else ""
+        label = (f"⚡ PARLAY DOBLE ⚽{sport_tag}"
+                 if best_2[0].get("sport") == "football"
+                 else f"⚡ PARLAY DOBLE 🏀{sport_tag}")
         parlays.append({"label": label, "legs": best_2,
                         "combined_odds": co, "combined_prob": cp})
 
-    # ── Parlay 3: mismo deporte, alta confianza ───────────────────────────────
+    # ── Parlay 3: diverso primero, relajar solo si no hay opciones ─────────────
     best_3 = (
-        best_triple(fp_pool)        # Fútbol
-        or best_triple(nba_pool)    # NBA
+        best_triple(fp_hi)                              # Fútbol hi-conf, ligas distintas
+        or best_triple(fp_hi, require_div_league=False) # Fútbol hi-conf, misma liga OK
+        or best_triple(nba_pool)                        # NBA
+        or best_triple(hi_pool, require_div_league=False,
+                       min_prob=MIN_PROB_3 - 0.05)      # Mixto relajado
     )
+
     if best_3:
         co, cp = combined_stats(best_3)
         sport_em = "⚽" if best_3[0].get("sport") == "football" else "🏀"
@@ -1887,7 +1939,8 @@ def build_parlays(all_picks):
                         "legs": best_3,
                         "combined_odds": co, "combined_prob": cp})
 
-    log.info("Parlays: %d (⚽pool:%d 🏀pool:%d)", len(parlays), len(fp_pool), len(nba_pool))
+    log.info("Parlays: %d (⚽hi:%d 🏀pool:%d hi_total:%d)",
+             len(parlays), len(fp_hi), len(nba_pool), len(hi_pool))
     return parlays
 
 
@@ -2005,7 +2058,7 @@ def build_message(fp, np, parlays, upcoming=None):
     ds  = f"{DAYS_ES[now.weekday()]}, {now.day} de {MONTHS_ES[now.month-1]} de {now.year}"
 
     lines = [
-        "🏆 <b>VALUE BOT PRO v4.5</b>",
+        "🏆 <b>VALUE BOT PRO v4.6</b>",
         f"📅 {ds}",
         "━━━━━━━━━━━━━━━━━━━━━━",
         "",
@@ -2108,7 +2161,7 @@ def build_message(fp, np, parlays, upcoming=None):
     lines += [
         "━━━━━━━━━━━━━━━━━━━━━━",
         "⚠️ <i>Solo análisis informativo. Juega con responsabilidad.</i>",
-        "🤖 <i>Value Bot Pro v4.5  ·  Multi-Deporte + Playwright</i>",
+        "🤖 <i>Value Bot Pro v4.6  ·  Multi-Deporte + Playwright</i>",
     ]
     return "\n".join(lines)
 
@@ -2132,7 +2185,7 @@ async def send_telegram(msg):
 # ══════════════════════════════════════════════════════════════════
 
 async def main():
-    log.info("═══ Value Bot Pro v4.5 · Multi-Deporte + Playwright ═══")
+    log.info("═══ Value Bot Pro v4.6 · Multi-Deporte + Playwright ═══")
     log.info("Deportes activos: %s", [k for k, v in SPORTS_ENABLED.items() if v])
     log.info("nba_api disponible: %s | playwright: %s", NBA_API_OK, PLAYWRIGHT_OK)
 

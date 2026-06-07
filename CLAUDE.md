@@ -5,7 +5,7 @@ Analista Senior de Apuestas Multi-Deporte. Generar pronósticos + parlays diario
 
 ## Script principal
 `/Users/kleec/Documents/PredictsProyect/predictions_betting_bot.py`
-Versión actual: **Value Bot Pro v4.5** (2144 líneas)
+Versión actual: **Value Bot Pro v4.6** (2209 líneas)
 
 ## Deportes soportados
 | Deporte | Estado | Fuentes |
@@ -162,4 +162,5 @@ crontab -e
 - **v4.2 ⚽🏀**: nba_api integrado, 3-5 picks/juego, parlays automáticos 62%+, formato agrupado por partido, sección upcoming
 - **v4.3 ⚽🏀**: Playwright stealth Capa 4 (Flashscore NBA+Fútbol), UA rotation, request interception, scroll infinito, fix nba_api per_mode_simple
 - **v4.4 ⚽🏀**: BUGFIX NBA Over Points (normalization totales→per-game), sanity check 180-275pts, LEAGUE_AVERAGES fútbol, Double Chance picks, NBA Spread+TeamTotal, múltiples picks/partido fútbol, parlays same-sport
-- **v4.5 ⚽🏀**: FIX CRÍTICO import os, probabilidades Poisson reales, Under 2.5 nuevo mercado, picks por estilo de liga, max 3 picks/partido, reasoning con XG, 1X2 logístico, Double Chance 12-23pts (ACTUAL)
+- **v4.5 ⚽🏀**: FIX CRÍTICO import os, probabilidades Poisson reales, Under 2.5 nuevo mercado, picks por estilo de liga, max 3 picks/partido, reasoning con XG, 1X2 logístico, Double Chance 12-23pts
+- **v4.6 ⚽🏀**: Deduplicación por (liga × tipo) máx 2, reasoning único por equipo, parlays min 68%+diversidad+prob≥38%, no-stats usa históricos directos (ACTUAL)
