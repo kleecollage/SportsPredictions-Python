@@ -266,9 +266,14 @@ def analyze_football_match(fix, hs, as_):
         lam  = la["avg_goals"]
         league_picks = []
 
+        # Sin stats individuales: usar tasa histórica con descuento del 10%
+        # (confianza conservadora — coherente con data_quality "medium", cap 68%)
+        def _hist_conf(pct):
+            return min(68, int(pct * 0.90))
+
         if style == "attacking":
-            if o25 >= 52:
-                conf = min(77, o25 + 10)
+            conf = _hist_conf(o25)
+            if conf >= MIN_CONFIDENCE:
                 league_picks.append({
                     "type": "Over 2.5 Goles",
                     "confidence": conf,
@@ -280,8 +285,8 @@ def analyze_football_match(fix, hs, as_):
                                   f"(media {lam:.2f} goles/j). Liga ofensiva, sin stats individuales."),
                     "data_quality": "medium",
                 })
-            if btts >= 55:
-                conf_b = min(74, btts + 12)
+            conf_b = _hist_conf(btts)
+            if conf_b >= MIN_CONFIDENCE:
                 league_picks.append({
                     "type": "Ambos Marcan (BTTS)",
                     "confidence": conf_b,
@@ -295,8 +300,8 @@ def analyze_football_match(fix, hs, as_):
                 })
 
         elif style == "defensive":
-            if u25 >= 52:
-                conf = min(74, u25 + 10)
+            conf = _hist_conf(u25)
+            if conf >= MIN_CONFIDENCE:
                 league_picks.append({
                     "type": "Under 2.5 Goles",
                     "confidence": conf,
@@ -308,13 +313,13 @@ def analyze_football_match(fix, hs, as_):
                                   f"(media {lam:.2f} goles/j). Partido táctico esperado."),
                     "data_quality": "medium",
                 })
-            if draw >= 26:
-                conf_x = min(66, draw + 37)
+            conf_x = _hist_conf(draw)
+            if conf_x >= MIN_CONFIDENCE:
                 league_picks.append({
                     "type": "Empate (X)",
                     "confidence": conf_x,
-                    "our_prob": round(draw / 100 + 0.08, 3),
-                    "est_odds": est_odds(draw / 100 + 0.06),
+                    "our_prob": round(draw / 100, 3),
+                    "est_odds": est_odds(draw / 100),
                     "value": None,
                     "reasoning": (f"{fix['home']} vs {fix['away']} | "
                                   f"{lg_name}: {draw}% empates hist. "
@@ -323,8 +328,8 @@ def analyze_football_match(fix, hs, as_):
                 })
 
         elif style == "technical":
-            if o25 >= 50:
-                conf = min(73, o25 + 12)
+            conf = _hist_conf(o25)
+            if conf >= MIN_CONFIDENCE:
                 league_picks.append({
                     "type": "Over 2.5 Goles",
                     "confidence": conf,
@@ -336,9 +341,9 @@ def analyze_football_match(fix, hs, as_):
                     "data_quality": "medium",
                 })
             hw = la["home_win_pct"]
-            if hw >= 44:
-                dc_prob = round(min(0.68, (hw + draw) / 100), 3)
-                conf_dc = min(68, hw + 22)
+            dc_prob = round(min(0.68, (hw + draw) / 100), 3)
+            conf_dc = _hist_conf(hw + draw)
+            if conf_dc >= MIN_CONFIDENCE:
                 league_picks.append({
                     "type": "Doble Chance Local (1X)",
                     "confidence": conf_dc,
@@ -351,8 +356,8 @@ def analyze_football_match(fix, hs, as_):
                 })
 
         else:  # balanced
-            if o25 >= 50:
-                conf = min(75, o25 + 10)
+            conf = _hist_conf(o25)
+            if conf >= MIN_CONFIDENCE:
                 league_picks.append({
                     "type": "Over 2.5 Goles",
                     "confidence": conf,
@@ -363,8 +368,8 @@ def analyze_football_match(fix, hs, as_):
                                   f"(media {lam:.2f} goles/j). Liga equilibrada."),
                     "data_quality": "medium",
                 })
-            if btts >= 52:
-                conf_b = min(72, btts + 12)
+            conf_b = _hist_conf(btts)
+            if conf_b >= MIN_CONFIDENCE:
                 league_picks.append({
                     "type": "Ambos Marcan (BTTS)",
                     "confidence": conf_b,
@@ -463,8 +468,8 @@ def analyze_football_match(fix, hs, as_):
                 "our_prob": round(btts_prob, 3),
                 "est_odds": est_odds(btts_prob),
                 "value": None,
-                "reasoning": (f"P(local marca)={1-math.exp(-exp_h)*100:.0f}%, "
-                              f"P(visitante marca)={1-math.exp(-exp_a)*100:.0f}%. "
+                "reasoning": (f"P(local marca)={(1-math.exp(-exp_h))*100:.0f}%, "
+                              f"P(visitante marca)={(1-math.exp(-exp_a))*100:.0f}%. "
                               f"{fix['home']} anota {gf_h:.1f}/j; {fix['away']} {gf_a:.1f}/j."),
                 "data_quality": "high",
             })
@@ -555,7 +560,7 @@ def analyze_football_match(fix, hs, as_):
             "type": dc_type,
             "confidence": int(dc_prob * 100),
             "our_prob": dc_prob,
-            "est_odds": round(est_odds(dc_prob * 0.72), 2),
+            "est_odds": round(est_odds(dc_prob) * 0.72, 2),  # descuento sobre cuota, no sobre prob
             "value": None,
             "reasoning": dc_ctx,
             "data_quality": "medium",
