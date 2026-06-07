@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    Value Bot Pro — launchd service (Mac)
+
+    Instalación:
+        cp /Users/kleec/Documents/pronostic_project/value_bot/scheduler.plist \
+           ~/Library/LaunchAgents/com.valuebot.scheduler.plist
+        launchctl load ~/Library/LaunchAgents/com.valuebot.scheduler.plist
+
+    Desinstalar:
+        launchctl unload ~/Library/LaunchAgents/com.valuebot.scheduler.plist
+
+    Ver logs:
+        tail -f /Users/kleec/Documents/pronostic_project/scheduler.log
+        tail -f /Users/kleec/Documents/pronostic_project/scheduler_error.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.valuebot.scheduler</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>-m</string>
+        <string>value_bot.scheduler</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/kleec/Documents/pronostic_project</string>
+
+    <!-- Arrancar al hacer login y mantener vivo si se cae -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Reiniciar con 10s de delay si el proceso muere -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/kleec/Documents/pronostic_project/scheduler.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/kleec/Documents/pronostic_project/scheduler_error.log</string>
+
+    <!-- Variables de entorno (alternativa a .env si no usas dotenv) -->
+    <!-- Descomenta y completa si no tienes .env en el directorio de trabajo
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>TELEGRAM_BOT_TOKEN</key>
+        <string>TU_TOKEN_AQUI</string>
+        <key>TELEGRAM_CHAT_ID</key>
+        <string>TU_CHAT_ID_AQUI</string>
+    </dict>
+    -->
+</dict>
+</plist>

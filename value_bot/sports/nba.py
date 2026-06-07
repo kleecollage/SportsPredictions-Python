@@ -12,7 +12,12 @@ from value_bot.scrapers.espn import espn_nba_games, espn_parse_nba, scrape_bbc_s
 
 try:
     from nba_api.stats.static import teams as nba_static_teams
-    from nba_api.stats.endpoints import leaguedashteamstats, teamgamelog
+    from nba_api.stats.endpoints import (
+        leaguedashteamstats,
+        teamgamelog,
+        teamdashboardbygeneralsplits,
+        leaguegamefinder,
+    )
     NBA_API_OK = True
 except ImportError:
     NBA_API_OK = False
@@ -222,6 +227,161 @@ def get_nba_team_stats_apisports(team_id):
         "form": recent, "form_pts": form_pts,
         "recent_pts": [], "source": "api-sports",
     }
+
+
+def nba_get_home_away_splits(team_name: str, location: str) -> dict:
+    """
+    TeamDashboardByGeneralSplits → stats separadas home/away para un equipo.
+
+    location: "home" | "road"
+    Retorna {ppg, opp_ppg, win_pct, gp} para ese split, o {} si falla.
+    Cacheado en store.nba_splits_cache[(team_name, location)].
+    """
+    cache_key = (team_name, location)
+    if cache_key in store.nba_splits_cache:
+        return store.nba_splits_cache[cache_key]
+
+    empty: dict = {}
+    if not NBA_API_OK:
+        store.nba_splits_cache[cache_key] = empty
+        return empty
+
+    tid = _nba_find_team_id(team_name)
+    if not tid:
+        store.nba_splits_cache[cache_key] = empty
+        return empty
+
+    for season_type in ("Playoffs", "Regular Season"):
+        try:
+            time.sleep(0.8)
+            dash = teamdashboardbygeneralsplits.TeamDashboardByGeneralSplits(
+                team_id=tid,
+                season=NBA_API_SEASON,
+                season_type_all_star=season_type,
+                per_mode_simple="PerGame",
+            )
+            # El DataFrame "LocationTeamDashboard" tiene filas "Home" y "Road"
+            loc_df = dash.get_data_frames()[1]  # index 1 = location splits
+            if loc_df.empty:
+                continue
+
+            row_label = "Home" if location == "home" else "Road"
+            rows = loc_df[loc_df["GROUP_VALUE"] == row_label]
+            if rows.empty:
+                continue
+
+            row = rows.iloc[0]
+            gp = int(row.get("GP", 0) or 0)
+            if gp < 2:
+                continue
+
+            pts = float(row.get("PTS", 0) or 0)
+            pm  = float(row.get("PLUS_MINUS", 0) or 0)
+            w   = int(row.get("W", 0) or 0)
+
+            result = {
+                "ppg":     round(pts, 1),
+                "opp_ppg": round(pts - pm, 1),
+                "win_pct": round(w / gp * 100, 1),
+                "gp":      gp,
+                "source":  f"nba_api_splits_{season_type.replace(' ','_').lower()}",
+            }
+            store.nba_splits_cache[cache_key] = result
+            log.info("Splits %s (%s, %s): ppg=%.1f opp=%.1f",
+                     team_name, location, season_type, pts, pts - pm)
+            return result
+
+        except Exception as exc:
+            log.warning("nba_api splits (%s, %s, %s): %s", team_name, location, season_type, exc)
+
+    store.nba_splits_cache[cache_key] = empty
+    return empty
+
+
+def nba_get_h2h_stats(home_team: str, away_team: str, n_games: int = 10) -> dict:
+    """
+    LeagueGameFinder → últimos N partidos entre estos dos equipos en Playoffs.
+    Solo se llama cuando el partido es de Playoffs/Finals.
+
+    Retorna:
+        {
+            total_games: int,
+            avg_total:   float,   # promedio de puntos totales en esos partidos
+            over_215_pct: float,  # % de partidos con total > 215
+            over_220_pct: float,  # % de partidos con total > 220
+            home_win_pct: float,  # % ganados por el equipo local en H2H
+        }
+    O {} si hay menos de 3 partidos H2H disponibles.
+    """
+    cache_key = (home_team, away_team)
+    if cache_key in store.nba_h2h_cache:
+        return store.nba_h2h_cache[cache_key]
+
+    empty: dict = {}
+    if not NBA_API_OK:
+        store.nba_h2h_cache[cache_key] = empty
+        return empty
+
+    home_tid = _nba_find_team_id(home_team)
+    away_tid = _nba_find_team_id(away_team)
+    if not (home_tid and away_tid):
+        store.nba_h2h_cache[cache_key] = empty
+        return empty
+
+    try:
+        time.sleep(0.8)
+        # Buscar partidos del equipo local donde el oponente sea el equipo visitante
+        finder = leaguegamefinder.LeagueGameFinder(
+            team_id_nullable=home_tid,
+            vs_team_id_nullable=away_tid,
+            season_type_nullable="Playoffs",
+        )
+        df = finder.get_data_frames()[0]
+
+        if df.empty or len(df) < 3:
+            # Fallback: temporada regular si no hay suficientes Playoffs H2H
+            time.sleep(0.8)
+            finder_rs = leaguegamefinder.LeagueGameFinder(
+                team_id_nullable=home_tid,
+                vs_team_id_nullable=away_tid,
+                season_type_nullable="Regular Season",
+            )
+            df = finder_rs.get_data_frames()[0]
+
+        if df.empty or len(df) < 3:
+            store.nba_h2h_cache[cache_key] = empty
+            return empty
+
+        df = df.head(n_games)
+
+        # PTS = puntos del equipo local en ese partido
+        # PLUS_MINUS = margen → opp_pts = PTS - PLUS_MINUS
+        pts_home   = df["PTS"].astype(float)
+        pts_away   = pts_home - df["PLUS_MINUS"].astype(float)
+        totals     = pts_home + pts_away
+        home_wins  = (df["WL"] == "W").sum()
+
+        avg_total    = round(float(totals.mean()), 1)
+        over_215_pct = round(float((totals > 215).mean() * 100), 1)
+        over_220_pct = round(float((totals > 220).mean() * 100), 1)
+        home_win_pct = round(float(home_wins / len(df) * 100), 1)
+
+        result = {
+            "total_games":  len(df),
+            "avg_total":    avg_total,
+            "over_215_pct": over_215_pct,
+            "over_220_pct": over_220_pct,
+            "home_win_pct": home_win_pct,
+        }
+        store.nba_h2h_cache[cache_key] = result
+        log.info("H2H %s vs %s (%d partidos): avg_total=%.1f over215=%.0f%% home_wr=%.0f%%",
+                 home_team, away_team, len(df), avg_total, over_215_pct, home_win_pct)
+        return result
+
+    except Exception as exc:
+        log.warning("nba_api H2H (%s vs %s): %s", home_team, away_team, exc)
+        store.nba_h2h_cache[cache_key] = empty
+        return empty
 
 
 def get_best_nba_stats(game):

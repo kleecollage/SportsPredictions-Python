@@ -1,0 +1,23 @@
+# Value Bot Pro — dependencias Python
+# Instalar con: pip install -r requirements.txt
+
+# Core
+python-telegram-bot>=20.0
+requests>=2.28
+playwright>=1.40           # pip install playwright && playwright install chromium
+
+# Sports data
+nba_api>=1.4               # stats NBA históricas
+
+# Analytics (opcional pero recomendado)
+pandas>=2.0                # análisis de BD, calibración del modelo
+
+# Scheduling (alternativa a crontab)
+APScheduler>=3.10          # scheduler programático con misfire recovery
+SQLAlchemy>=2.0            # jobstore SQLite para APScheduler
+
+# Retry HTTP
+tenacity>=8.0              # backoff exponencial para llamadas API
+
+# Utilidades
+python-dotenv>=1.0         # cargar .env con variables de entorno
