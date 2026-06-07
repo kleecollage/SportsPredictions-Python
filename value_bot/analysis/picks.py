@@ -2,6 +2,7 @@
 import math
 import logging
 from collections import defaultdict
+from datetime import datetime
 
 from value_bot.config import (
     MIN_CONFIDENCE, MAX_PICKS_SPORT, VALUE_THRESHOLD,
@@ -9,6 +10,28 @@ from value_bot.config import (
 )
 from value_bot.sports.nba import get_nba_games, get_best_nba_stats
 from value_bot.sports.football import collect_football_fixtures, build_football_stats, get_real_odds
+
+try:
+    from value_bot.db import already_sent_today as _already_sent, get_calibration_factors as _get_cal
+    _DB_DEDUP = True
+except ImportError:
+    _DB_DEDUP = False
+    def _already_sent(*_): return False
+    def _get_cal(*_): return {}
+
+
+def _apply_calibration(pick: dict, factors: dict) -> dict:
+    """Ajusta confidence y our_prob según historial real del modelo."""
+    if not factors:
+        return pick
+    bucket = (pick["confidence"] // 5) * 5
+    factor = factors.get(bucket, 1.0)
+    if factor == 1.0:
+        return pick
+    new_conf = min(95, max(55, int(pick["confidence"] * factor)))
+    new_prob = round(min(0.95, (pick.get("our_prob") or pick["confidence"] / 100) * factor), 3)
+    pick = {**pick, "confidence": new_conf, "our_prob": new_prob}
+    return pick
 
 log = logging.getLogger(__name__)
 
@@ -237,10 +260,12 @@ def analyze_nba_game(game):
 def get_nba_picks():
     games = get_nba_games()
     all_picks = []
+    cal_factors = _get_cal() if _DB_DEDUP else {}
 
     for game in games:
         game_picks = analyze_nba_game(game)
         for pd in game_picks:
+            pd = _apply_calibration(pd, cal_factors)
             if pd["confidence"] >= MIN_CONFIDENCE:
                 all_picks.append({
                     **game, **pd,
@@ -253,6 +278,18 @@ def get_nba_picks():
         key=lambda x: (1 if x.get("is_finals") else 0, x["confidence"]),
         reverse=True,
     )
+
+    # Dedup contra BD: filtrar picks ya enviados hoy
+    if _DB_DEDUP:
+        today = datetime.now().strftime("%Y-%m-%d")
+        before = len(all_picks)
+        all_picks = [
+            p for p in all_picks
+            if not _already_sent(p["home"], p["away"], p["type"], today)
+        ]
+        if before != len(all_picks):
+            log.info("NBA dedup BD: %d picks ya enviados hoy filtrados", before - len(all_picks))
+
     result = all_picks[:MAX_PICKS_SPORT]
     log.info("NBA picks: %d", len(result))
     return result
@@ -600,12 +637,14 @@ def analyze_football_match(fix, hs, as_):
 
 def get_football_picks():
     """v4.6: football picks with intelligent deduplication."""
-    fixtures  = collect_football_fixtures()
-    stats     = build_football_stats(fixtures)
-    all_picks = []
+    fixtures    = collect_football_fixtures()
+    stats       = build_football_stats(fixtures)
+    all_picks   = []
+    cal_factors = _get_cal() if _DB_DEDUP else {}
     for fix in fixtures:
         analysis = analyze_football_match(fix, stats.get(fix["home"]), stats.get(fix["away"]))
         for pick in analysis:
+            pick = _apply_calibration(pick, cal_factors)
             if pick["confidence"] >= MIN_CONFIDENCE:
                 all_picks.append({**fix, **pick})
 
@@ -625,6 +664,18 @@ def get_football_picks():
             deduped.append(p)
             lg_type_count[key] += 1
 
-    result = deduped[:MAX_PICKS_SPORT]
-    log.info("Football picks: %d (de %d fixtures, %d candidatos)", len(result), len(fixtures), len(all_picks))
-    return result
+    deduped = deduped[:MAX_PICKS_SPORT]
+
+    # Dedup contra BD: filtrar picks ya enviados hoy
+    if _DB_DEDUP:
+        today = datetime.now().strftime("%Y-%m-%d")
+        before = len(deduped)
+        deduped = [
+            p for p in deduped
+            if not _already_sent(p["home"], p["away"], p["type"], today)
+        ]
+        if before != len(deduped):
+            log.info("Football dedup BD: %d picks ya enviados hoy filtrados", before - len(deduped))
+
+    log.info("Football picks: %d (de %d fixtures, %d candidatos)", len(deduped), len(fixtures), len(all_picks))
+    return deduped

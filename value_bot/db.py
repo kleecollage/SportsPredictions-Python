@@ -6,6 +6,12 @@ from pathlib import Path
 
 from value_bot.config import ESPN_NBA_URL, http_get
 
+try:
+    import pandas as pd
+    _PANDAS_OK = True
+except ImportError:
+    _PANDAS_OK = False
+
 DB_PATH = Path(__file__).parent.parent / "picks_history.db"
 
 log = logging.getLogger(__name__)
@@ -241,65 +247,110 @@ def resolve_nba_picks_auto(run_date: str) -> int:
 
 # ── Análisis y ROI ────────────────────────────────────────────────
 
+def load_picks_df(days: int = 90):
+    """
+    Carga picks + results en un DataFrame (pandas) listo para análisis.
+    Requiere pandas instalado. Si no está disponible retorna None.
+    Retorna DataFrame vacío si las tablas aún no existen (primera ejecución).
+    """
+    if not _PANDAS_OK:
+        log.warning("pandas no disponible — load_picks_df retorna None")
+        return None
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            df = pd.read_sql("""
+                SELECT p.*, r.outcome, r.profit_units
+                FROM picks p
+                LEFT JOIN results r ON r.pick_id = p.id
+                WHERE p.run_date >= date('now', ?)
+            """, conn, params=(f"-{days} days",))
+        return df
+    except Exception as exc:
+        log.debug("load_picks_df: %s (tablas aún no creadas?)", exc)
+        return pd.DataFrame()
+
+
 def get_roi_summary(days: int = 30) -> dict:
     """
     Métricas de rendimiento de los últimos N días.
     Solo picks con outcome resuelto (win/loss).
+    Usa pandas si disponible, SQL puro como fallback.
     """
-    with sqlite3.connect(DB_PATH) as conn:
-        rows = conn.execute("""
-            SELECT
-                p.sport,
-                p.league,
-                p.data_quality,
-                r.outcome,
-                r.profit_units,
-                p.confidence,
-                p.est_odds
-            FROM picks p
-            JOIN results r ON r.pick_id = p.id
-            WHERE p.run_date >= date('now', ?)
-              AND r.outcome IN ('win', 'loss')
-        """, (f"-{days} days",)).fetchall()
+    if _PANDAS_OK:
+        df = load_picks_df(days)
+        if df is None or df.empty or "outcome" not in df.columns:
+            return {"error": "sin datos resueltos"}
+        df = df[df["outcome"].isin(["win", "loss"])]
+        if df.empty:
+            return {"error": "sin datos resueltos"}
 
-    if not rows:
-        return {"error": "sin datos resueltos"}
+        total  = len(df)
+        wins   = (df["outcome"] == "win").sum()
+        profit = df["profit_units"].fillna(0).sum()
 
-    total  = len(rows)
-    wins   = sum(1 for r in rows if r[3] == "win")
-    profit = sum(r[4] for r in rows if r[4] is not None)
+        by_sport_df = (
+            df.groupby("sport")
+              .agg(
+                  total=("outcome", "count"),
+                  wins=("outcome", lambda x: (x == "win").sum()),
+                  profit=("profit_units", "sum"),
+              )
+              .assign(
+                  win_rate=lambda d: (d["wins"] / d["total"] * 100).round(1),
+                  profit=lambda d: d["profit"].round(2),
+              )
+        )
+        by_sport = by_sport_df.to_dict("index")
 
-    by_sport   = {}
-    by_quality = {}
+        by_quality_df = (
+            df.groupby("data_quality")
+              .agg(
+                  total=("outcome", "count"),
+                  wins=("outcome", lambda x: (x == "win").sum()),
+              )
+              .assign(win_rate=lambda d: (d["wins"] / d["total"] * 100).round(1))
+        )
+        by_quality = by_quality_df.to_dict("index")
 
-    for row in rows:
-        sport, league, dq, outcome, profit_u, conf, odds = row
+    else:
+        # Fallback SQL puro
+        with sqlite3.connect(DB_PATH) as conn:
+            rows = conn.execute("""
+                SELECT p.sport, p.data_quality, r.outcome, r.profit_units
+                FROM picks p
+                JOIN results r ON r.pick_id = p.id
+                WHERE p.run_date >= date('now', ?)
+                  AND r.outcome IN ('win', 'loss')
+            """, (f"-{days} days",)).fetchall()
 
-        if sport not in by_sport:
-            by_sport[sport] = {"total": 0, "wins": 0, "profit": 0.0}
-        by_sport[sport]["total"]  += 1
-        by_sport[sport]["profit"] += profit_u or 0
-        if outcome == "win":
-            by_sport[sport]["wins"] += 1
+        if not rows:
+            return {"error": "sin datos resueltos"}
 
-        if dq not in by_quality:
-            by_quality[dq] = {"total": 0, "wins": 0}
-        by_quality[dq]["total"] += 1
-        if outcome == "win":
-            by_quality[dq]["wins"] += 1
-
-    # Añadir win_rate calculado por deporte
-    for sport_data in by_sport.values():
-        t = sport_data["total"]
-        sport_data["win_rate"] = round(sport_data["wins"] / t * 100, 1) if t else 0.0
-        sport_data["profit"]   = round(sport_data["profit"], 2)
+        total  = len(rows)
+        wins   = sum(1 for r in rows if r[2] == "win")
+        profit = sum(r[3] or 0 for r in rows)
+        by_sport, by_quality = {}, {}
+        for sport, dq, outcome, profit_u in rows:
+            by_sport.setdefault(sport, {"total": 0, "wins": 0, "profit": 0.0})
+            by_sport[sport]["total"]  += 1
+            by_sport[sport]["profit"] += profit_u or 0
+            if outcome == "win":
+                by_sport[sport]["wins"] += 1
+            by_quality.setdefault(dq, {"total": 0, "wins": 0})
+            by_quality[dq]["total"] += 1
+            if outcome == "win":
+                by_quality[dq]["wins"] += 1
+        for sd in by_sport.values():
+            t = sd["total"]
+            sd["win_rate"] = round(sd["wins"] / t * 100, 1) if t else 0.0
+            sd["profit"]   = round(sd["profit"], 2)
 
     return {
         "period_days":  days,
-        "total_picks":  total,
-        "win_rate":     round(wins / total * 100, 1),
-        "total_profit": round(profit, 2),
-        "roi_pct":      round(profit / total * 100, 2),
+        "total_picks":  int(total),
+        "win_rate":     round(float(wins) / float(total) * 100, 1),
+        "total_profit": round(float(profit), 2),
+        "roi_pct":      round(float(profit) / float(total) * 100, 2),
         "by_sport":     by_sport,
         "by_quality":   by_quality,
     }
@@ -310,6 +361,34 @@ def get_model_calibration(min_picks: int = 10) -> list[dict]:
     Compara our_prob predicha vs win_rate real agrupada por bucket de confianza.
     Delta negativo = modelo sobreestima; positivo = modelo subestima.
     """
+    if _PANDAS_OK:
+        df = load_picks_df(90)
+        if df is None or df.empty or "outcome" not in df.columns:
+            return []
+        df = df[df["outcome"].isin(["win", "loss"])].copy()
+        if df.empty:
+            return []
+        df["bucket"] = (df["confidence"] // 5) * 5
+        grouped = (
+            df.groupby("bucket")
+              .agg(total=("outcome", "count"),
+                   wins=("outcome", lambda x: (x == "win").sum()))
+        )
+        result = []
+        for bucket, row in grouped.iterrows():
+            if row["total"] < min_picks:
+                continue
+            actual_wr = round(row["wins"] / row["total"] * 100, 1)
+            result.append({
+                "confidence_bucket": f"{bucket}-{bucket+4}%",
+                "predicted_prob":    int(bucket) + 2,
+                "actual_win_rate":   actual_wr,
+                "delta":             round(actual_wr - (int(bucket) + 2), 1),
+                "total_picks":       int(row["total"]),
+            })
+        return result
+
+    # Fallback SQL puro
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute("""
             SELECT
@@ -335,6 +414,59 @@ def get_model_calibration(min_picks: int = 10) -> list[dict]:
             "total_picks":       total,
         })
     return result
+
+
+def get_calibration_factors(min_picks_per_bucket: int = 15) -> dict:
+    """
+    Retorna {conf_bucket: factor} donde factor = actual_win_rate / predicted.
+    Solo buckets con >= min_picks_per_bucket picks resueltos.
+    Ejemplo: {65: 0.88, 70: 0.92, 75: 1.03}
+    Con pocos datos (<50 picks resueltos) retorna {} para no ajustar.
+    """
+    if _PANDAS_OK:
+        df = load_picks_df(90)
+        if df is None or df.empty or "outcome" not in df.columns:
+            return {}
+        df = df[df["outcome"].isin(["win", "loss"])].copy()
+        if len(df) < 50:
+            log.debug("get_calibration_factors: solo %d picks resueltos — sin ajuste", len(df))
+            return {}
+        df["bucket"] = (df["confidence"] // 5) * 5
+        grouped = df.groupby("bucket").agg(
+            total=("outcome", "count"),
+            actual_wr=("outcome", lambda x: (x == "win").mean() * 100),
+        )
+        factors = {}
+        for bucket, row in grouped.iterrows():
+            if row["total"] >= min_picks_per_bucket:
+                predicted = int(bucket) + 2
+                factors[int(bucket)] = round(float(row["actual_wr"]) / predicted, 3)
+        return factors
+
+    # Fallback SQL
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute("""
+            SELECT
+                CAST(p.confidence / 5 AS INT) * 5 AS bucket,
+                COUNT(*) AS total,
+                AVG(CASE WHEN r.outcome='win' THEN 100.0 ELSE 0.0 END) AS actual_wr
+            FROM picks p
+            JOIN results r ON r.pick_id = p.id
+            WHERE r.outcome IN ('win','loss')
+            GROUP BY bucket
+        """).fetchall()
+        total_count = conn.execute(
+            "SELECT COUNT(*) FROM picks p JOIN results r ON r.pick_id=p.id WHERE r.outcome IN ('win','loss')"
+        ).fetchone()[0]
+
+    if total_count < 50:
+        return {}
+    factors = {}
+    for bucket, total, actual_wr in rows:
+        if total >= min_picks_per_bucket:
+            predicted = int(bucket) + 2
+            factors[int(bucket)] = round(float(actual_wr) / predicted, 3)
+    return factors
 
 
 def get_recent_picks(days: int = 7) -> list[dict]:
