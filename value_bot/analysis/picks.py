@@ -61,7 +61,7 @@ def _poisson_btts(exp_h: float, exp_a: float) -> float:
 
 def analyze_nba_game(game):
     """Generates 3-5 picks per game."""
-    h_stats, a_stats = get_best_nba_stats(game)
+    h_stats, a_stats, splits, h2h = get_best_nba_stats(game)
     picks = []
 
     is_finals  = game.get("is_finals", False)
@@ -72,74 +72,136 @@ def analyze_nba_game(game):
                   else (" [NBA Finals]" if is_finals else ""))
 
     if h_stats and a_stats:
-        h_ppg = h_stats["ppg"];     a_ppg = a_stats["ppg"]
-        h_opp = h_stats["opp_ppg"]; a_opp = a_stats["opp_ppg"]
         h_form = h_stats.get("form", ""); a_form = a_stats.get("form", "")
         h_fe   = _form_emoji(h_form) if h_form else "—"
         a_fe   = _form_emoji(a_form) if a_form else "—"
 
-        projected = (h_ppg + a_opp + a_ppg + h_opp) / 2
+        # ── Proyección con splits situacionales ──────────────────────
+        # Si hay splits home/away, usamos los ppg/opp_ppg situacionales
+        # (Boston en casa vs Chicago de visitante), que son más precisos.
+        # Si no hay splits, caemos a los promedios globales de temporada.
+        h_split = splits.get("home", {})
+        a_split = splits.get("away", {})
+
+        h_ppg_eff = h_split.get("ppg",     h_stats["ppg"])
+        h_opp_eff = h_split.get("opp_ppg", h_stats["opp_ppg"])
+        a_ppg_eff = a_split.get("ppg",     a_stats["ppg"])
+        a_opp_eff = a_split.get("opp_ppg", a_stats["opp_ppg"])
+
+        # Guardamos también los valores globales para reasoning
+        h_ppg = h_stats["ppg"]; h_opp = h_stats["opp_ppg"]
+        a_ppg = a_stats["ppg"]; a_opp = a_stats["opp_ppg"]
+
+        using_splits = bool(h_split and a_split)
+        projected = (h_ppg_eff + a_opp_eff + a_ppg_eff + h_opp_eff) / 2
+
         if not (180.0 <= projected <= 275.0):
             log.warning("NBA línea fuera de rango: %.1f pts → usando default", projected)
             projected = 218.5 if is_finals else 221.0
         game_line = round(projected, 1)
 
+        splits_note = " (splits sit.)" if using_splits else ""
+        dq_base     = "high" if using_splits else "high"   # sigue high, splits refuerzan
+
+        # ── H2H: ajuste de confianza para el total ───────────────────
+        # Si el H2H histórico apunta en la misma dirección que Poisson,
+        # subimos confianza hasta +5pts. Si contradice, bajamos -5pts.
+        h2h_conf_adj = 0
+        h2h_note     = ""
+        if h2h:
+            n = h2h["total_games"]
+            h2h_note = (f" | H2H {n}j: avg {h2h['avg_total']:.0f}pts, "
+                        f"O215={h2h['over_215_pct']:.0f}%")
+            if projected >= 215:
+                if h2h["over_215_pct"] >= 60:
+                    h2h_conf_adj = +5   # H2H confirma Over
+                elif h2h["over_215_pct"] <= 35:
+                    h2h_conf_adj = -5   # H2H contradice Over
+            else:
+                if h2h["over_215_pct"] <= 40:
+                    h2h_conf_adj = +5   # H2H confirma Under
+                elif h2h["over_215_pct"] >= 65:
+                    h2h_conf_adj = -5   # H2H contradice Under
+
         # Pick 1: Game total
         if projected >= 218:
             prob = min(0.80, 0.54 + (projected - 210) * 0.008)
+            conf = min(85, int(prob * 100) + h2h_conf_adj)
             picks.append({
                 "type": f"Over {game_line} Puntos",
-                "confidence": int(prob * 100),
+                "confidence": max(MIN_CONFIDENCE, conf),
                 "our_prob": round(prob, 3),
                 "est_odds": est_odds(prob),
                 "value": None,
-                "reasoning": (f"{game['home']}: {h_ppg:.0f}pts {h_fe} | "
-                              f"{game['away']}: {a_ppg:.0f}pts {a_fe} | "
-                              f"Proyección ~{projected:.0f}pts{ctx}"),
-                "data_quality": "high",
+                "reasoning": (f"{game['home']}: {h_ppg_eff:.0f}pts{splits_note} {h_fe} | "
+                              f"{game['away']}: {a_ppg_eff:.0f}pts{splits_note} {a_fe} | "
+                              f"Proyección ~{projected:.0f}pts{h2h_note}{ctx}"),
+                "data_quality": dq_base,
             })
         elif projected <= 210:
             prob = min(0.76, 0.54 + (210 - projected) * 0.007)
+            conf = min(82, int(prob * 100) + h2h_conf_adj)
             picks.append({
                 "type": f"Under {game_line} Puntos",
-                "confidence": int(prob * 100),
+                "confidence": max(MIN_CONFIDENCE, conf),
                 "our_prob": round(prob, 3),
                 "est_odds": est_odds(prob),
                 "value": None,
-                "reasoning": (f"Defensas dominantes. {game['home']} concede {h_opp:.0f}/j, "
-                              f"{game['away']} concede {a_opp:.0f}/j → ~{projected:.0f}pts{ctx}"),
-                "data_quality": "high",
+                "reasoning": (f"Defensas dominantes. {game['home']} concede {h_opp_eff:.0f}/j, "
+                              f"{game['away']} concede {a_opp_eff:.0f}/j → ~{projected:.0f}pts"
+                              f"{h2h_note}{ctx}"),
+                "data_quality": dq_base,
             })
         else:
             direction = "Over" if projected >= 214 else "Under"
+            conf = min(68, 63 + h2h_conf_adj)
             picks.append({
                 "type": f"{direction} {game_line} Puntos",
-                "confidence": 63, "our_prob": 0.63,
+                "confidence": max(MIN_CONFIDENCE, conf), "our_prob": 0.63,
                 "est_odds": est_odds(0.63), "value": None,
-                "reasoning": (f"Proyección equilibrada ~{projected:.0f}pts. "
-                              f"{game['home']} {h_ppg:.0f}/j vs {game['away']} {a_ppg:.0f}/j{ctx}"),
+                "reasoning": (f"Proyección equilibrada ~{projected:.0f}pts{splits_note}. "
+                              f"{game['home']} {h_ppg_eff:.0f}/j vs {game['away']} {a_ppg_eff:.0f}/j"
+                              f"{h2h_note}{ctx}"),
                 "data_quality": "medium",
             })
 
         # Pick 2: Moneyline
-        h_str = h_stats["win_rate"] + h_stats.get("form_pts", 0) * 2 + 8
-        a_str = a_stats["win_rate"] + a_stats.get("form_pts", 0) * 2
+        # Si hay splits, el win_pct situacional pesa más que el promedio global
+        h_wr_eff = h_split.get("win_pct", h_stats["win_rate"]) if h_split else h_stats["win_rate"]
+        a_wr_eff = a_split.get("win_pct", a_stats["win_rate"]) if a_split else a_stats["win_rate"]
+        h_str = h_wr_eff + h_stats.get("form_pts", 0) * 2 + 8   # +8 ventaja local
+        a_str = a_wr_eff + a_stats.get("form_pts", 0) * 2
         diff  = h_str - a_str
+
+        # H2H: si el equipo local tiene % de victorias H2H alto, suma al diff
+        if h2h and h2h.get("home_win_pct", 50) >= 65:
+            diff += 4   # históricamente domina de local en este matchup
+        elif h2h and h2h.get("home_win_pct", 50) <= 35:
+            diff -= 4   # históricamente pierde de local en este matchup
 
         if abs(diff) >= 15:
             if diff > 0:
-                fav, fav_wr, fav_pm, fav_fe_s = game["home"], h_stats["win_rate"], h_stats.get("pm", 0), h_fe
+                fav       = game["home"]
+                fav_wr    = h_wr_eff
+                fav_pm    = h_stats.get("pm", 0)
+                fav_fe_s  = h_fe
+                fav_split = "en casa" if h_split else ""
             else:
-                fav, fav_wr, fav_pm, fav_fe_s = game["away"], a_stats["win_rate"], a_stats.get("pm", 0), a_fe
+                fav       = game["away"]
+                fav_wr    = a_wr_eff
+                fav_pm    = a_stats.get("pm", 0)
+                fav_fe_s  = a_fe
+                fav_split = "de visitante" if a_split else ""
             prob = min(0.78, 0.52 + abs(diff) * 0.007)
+            h2h_win_note = (f" | H2H WR local {h2h['home_win_pct']:.0f}%" if h2h else "")
             picks.append({
                 "type": f"Victoria {fav}",
                 "confidence": int(prob * 100),
                 "our_prob": round(prob, 3),
                 "est_odds": est_odds(prob),
                 "value": None,
-                "reasoning": (f"{fav}: {fav_wr:.0f}% victorias {fav_fe_s}, "
-                              f"margin {fav_pm:+.1f}pts/j{ctx}"),
+                "reasoning": (f"{fav} {fav_split}: {fav_wr:.0f}% victorias {fav_fe_s}, "
+                              f"margin {fav_pm:+.1f}pts/j{h2h_win_note}{ctx}"),
                 "data_quality": "high",
             })
         elif is_finals:

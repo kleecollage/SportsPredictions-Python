@@ -254,12 +254,19 @@ def nba_get_home_away_splits(team_name: str, location: str) -> dict:
     for season_type in ("Playoffs", "Regular Season"):
         try:
             time.sleep(0.8)
-            dash = teamdashboardbygeneralsplits.TeamDashboardByGeneralSplits(
-                team_id=tid,
-                season=NBA_API_SEASON,
-                season_type_all_star=season_type,
-                per_mode_simple="PerGame",
-            )
+            try:
+                dash = teamdashboardbygeneralsplits.TeamDashboardByGeneralSplits(
+                    team_id=tid,
+                    season=NBA_API_SEASON,
+                    season_type_all_star=season_type,
+                    per_mode_simple="PerGame",
+                )
+            except TypeError:
+                dash = teamdashboardbygeneralsplits.TeamDashboardByGeneralSplits(
+                    team_id=tid,
+                    season=NBA_API_SEASON,
+                    season_type_all_star=season_type,
+                )
             # El DataFrame "LocationTeamDashboard" tiene filas "Home" y "Road"
             loc_df = dash.get_data_frames()[1]  # index 1 = location splits
             if loc_df.empty:
@@ -335,6 +342,7 @@ def nba_get_h2h_stats(home_team: str, away_team: str, n_games: int = 10) -> dict
             team_id_nullable=home_tid,
             vs_team_id_nullable=away_tid,
             season_type_nullable="Playoffs",
+            timeout=60,
         )
         df = finder.get_data_frames()[0]
 
@@ -345,6 +353,7 @@ def nba_get_h2h_stats(home_team: str, away_team: str, n_games: int = 10) -> dict
                 team_id_nullable=home_tid,
                 vs_team_id_nullable=away_tid,
                 season_type_nullable="Regular Season",
+                timeout=60,
             )
             df = finder_rs.get_data_frames()[0]
 
@@ -385,14 +394,34 @@ def nba_get_h2h_stats(home_team: str, away_team: str, n_games: int = 10) -> dict
 
 
 def get_best_nba_stats(game):
-    """nba_api → api-sports → {}"""
+    """
+    nba_api → api-sports → {}
+    Retorna (h_stats, a_stats, splits, h2h) donde:
+      splits = {"home": {ppg, opp_ppg, ...}, "away": {ppg, opp_ppg, ...}}
+               o {} si no están disponibles
+      h2h    = {avg_total, over_215_pct, over_220_pct, home_win_pct}
+               o {} si el partido no es Playoffs o no hay datos
+    """
     h_stats = nba_get_team_full_stats(game["home"])
     a_stats = nba_get_team_full_stats(game["away"])
     if not h_stats and game.get("home_id"):
         h_stats = get_nba_team_stats_apisports(game["home_id"])
     if not a_stats and game.get("away_id"):
         a_stats = get_nba_team_stats_apisports(game["away_id"])
-    return h_stats, a_stats
+
+    # Splits home/away: solo si nba_api devolvió stats base
+    splits: dict = {}
+    if h_stats and h_stats.get("source", "").startswith("nba_api"):
+        h_split = nba_get_home_away_splits(game["home"], "home")
+        a_split = nba_get_home_away_splits(game["away"], "road")
+        if h_split and a_split:
+            splits = {"home": h_split, "away": a_split}
+
+    # H2H: solo en Playoffs/Finals para no gastar requests en season regular
+    is_playoffs = game.get("is_finals") or _is_nba_playoffs_month()
+    h2h = nba_get_h2h_stats(game["home"], game["away"]) if is_playoffs else {}
+
+    return h_stats, a_stats, splits, h2h
 
 
 def get_nba_games():
