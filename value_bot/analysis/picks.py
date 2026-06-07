@@ -161,7 +161,9 @@ def analyze_nba_game(game):
             })
 
         # Pick 5: 1st Half Total
-        half_line = round(game_line * 0.49, 1)
+        # projected = total esperado del partido (ej. 228pts)
+        # primera mitad ≈ 49% del total, con pequeño descuento por ritmo inicial
+        half_line = round(projected * 0.49 * 0.98, 1)   # ej. 228 * 0.49 * 0.98 ≈ 109.4
         half_prob = 0.65 if projected >= 218 else 0.63
         picks.append({
             "type": f"1ª Mitad Over {half_line}",
@@ -170,7 +172,8 @@ def analyze_nba_game(game):
             "est_odds": est_odds(half_prob),
             "value": None,
             "reasoning": (f"Ritmo alto de salida esperado en Playoffs. "
-                          f"~{half_line:.0f}pts proyectados en 1ª mitad{ctx}"),
+                          f"Total proyectado ~{projected:.0f}pts → "
+                          f"~{half_line:.0f}pts en 1ª mitad{ctx}"),
             "data_quality": "medium",
         })
 
@@ -220,7 +223,13 @@ def analyze_nba_game(game):
                 "data_quality": "low",
             })
 
-    picks = [p for p in picks if p["confidence"] >= MIN_CONFIDENCE]
+    # Filtrar por confianza mínima Y por cuota mínima apostable
+    # Cuota ≤ 1.30 significa que la casa ya descuenta ~77%+ → sin edge real
+    MIN_ODDS = 1.30
+    picks = [
+        p for p in picks
+        if p["confidence"] >= MIN_CONFIDENCE and p.get("est_odds", 0) > MIN_ODDS
+    ]
     picks.sort(key=lambda x: x["confidence"], reverse=True)
     return picks
 
@@ -580,7 +589,11 @@ def analyze_football_match(fix, hs, as_):
             "data_quality": "medium",
         })
 
-    picks = [p for p in picks if p["confidence"] >= MIN_CONFIDENCE]
+    MIN_ODDS = 1.30
+    picks = [
+        p for p in picks
+        if p["confidence"] >= MIN_CONFIDENCE and p.get("est_odds", 0) > MIN_ODDS
+    ]
     picks.sort(key=lambda x: (x["confidence"], x.get("value") or -99), reverse=True)
     return picks[:3]
 
