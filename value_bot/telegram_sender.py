@@ -116,7 +116,40 @@ def _game_block(group):
     return lines
 
 
-def build_message(fp, np, parlays, upcoming=None):
+def _performance_block(perf: dict) -> str:
+    """Genera el bloque HTML de rendimiento de los últimos 7 días."""
+    lines = [
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        "📈 <b>RENDIMIENTO (últimos 7 días)</b>",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        f"   🎯 Picks resueltos: <b>{perf['total_picks']}</b>  ·  Win rate: <b>{perf['win_rate']}%</b>",
+        f"   💰 ROI: <b>{perf['roi_pct']:+.1f}%</b>  ·  Profit: <b>{perf['total_profit']:+.2f}u</b>",
+    ]
+    by_sport = perf.get("by_sport", {})
+    if by_sport:
+        parts = []
+        for sport, sd in by_sport.items():
+            em = SPORT_EMO.get(sport, "🎯")
+            parts.append(f"{em} {sd['win_rate']}% WR")
+        lines.append("   " + "  |  ".join(parts))
+
+    by_quality = perf.get("by_quality", {})
+    q_parts = []
+    for dq in ("high", "medium", "low"):
+        if dq in by_quality:
+            qd = by_quality[dq]
+            icon = q_icon(dq)
+            wr = qd.get("win_rate", round(qd.get("wins", 0) / max(qd.get("total", 1), 1) * 100, 1))
+            q_parts.append(f"{icon} {dq.capitalize()}: {wr}%")
+    if q_parts:
+        lines.append("   " + "  |  ".join(q_parts))
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+def build_message(fp, np, parlays, upcoming=None, perf=None):
     now = datetime.now()
     ds  = f"{DAYS_ES[now.weekday()]}, {now.day} de {MONTHS_ES[now.month-1]} de {now.year}"
 
@@ -217,10 +250,109 @@ def build_message(fp, np, parlays, upcoming=None):
             lines.append(f"   {ko_s}")
             lines.append("")
 
+    # Bloque de rendimiento (solo si hay datos resueltos)
+    if perf and perf.get("total_picks", 0) >= 5:
+        lines.append(_performance_block(perf))
+
     lines += [
         "━━━━━━━━━━━━━━━━━━━━━━",
         "⚠️ <i>Solo análisis informativo. Juega con responsabilidad.</i>",
         "🤖 <i>Value Bot Pro v4.6  ·  Multi-Deporte + Playwright</i>",
+    ]
+    return "\n".join(lines)
+
+
+def build_weekly_report(roi: dict, calib: list, recent: list) -> str:
+    """Mensaje de reporte semanal completo para envío los lunes."""
+    now = datetime.now()
+    ds  = f"{DAYS_ES[now.weekday()]}, {now.day} de {MONTHS_ES[now.month-1]} de {now.year}"
+
+    lines = [
+        "📊 <b>VALUE BOT PRO — REPORTE SEMANAL</b>",
+        f"📅 {ds}",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+    ]
+
+    if roi.get("error"):
+        lines += [
+            "⚠️ <i>Sin suficientes datos resueltos esta semana.</i>",
+            "<i>El reporte se enriquecerá a medida que se acumulen resultados.</i>",
+            "",
+        ]
+    else:
+        lines += [
+            f"🎯 <b>Resumen general ({roi['period_days']} días)</b>",
+            f"   Picks resueltos: <b>{roi['total_picks']}</b>",
+            f"   Win rate: <b>{roi['win_rate']}%</b>",
+            f"   ROI: <b>{roi['roi_pct']:+.1f}%</b>  ·  Profit: <b>{roi['total_profit']:+.2f}u</b>",
+            "",
+        ]
+
+        by_sport = roi.get("by_sport", {})
+        if by_sport:
+            lines.append("📈 <b>Por deporte</b>")
+            for sport, sd in by_sport.items():
+                em = SPORT_EMO.get(sport, "🎯")
+                lines.append(
+                    f"   {em} <b>{sport.upper()}</b>: "
+                    f"{sd['win_rate']}% WR  ·  {sd['profit']:+.2f}u  ·  {sd['total']} picks"
+                )
+            lines.append("")
+
+        by_quality = roi.get("by_quality", {})
+        if by_quality:
+            lines.append("🔍 <b>Por calidad de datos</b>")
+            for dq in ("high", "medium", "low"):
+                if dq in by_quality:
+                    qd = by_quality[dq]
+                    wr = qd.get("win_rate", round(qd.get("wins", 0) / max(qd.get("total", 1), 1) * 100, 1))
+                    lines.append(f"   {q_icon(dq)} {dq.capitalize()}: {wr}% WR  ·  {qd['total']} picks")
+            lines.append("")
+
+    if calib:
+        lines += [
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            "🧮 <b>Calibración del modelo</b>",
+            "<code>Bucket     Predicho  Real      Delta</code>",
+        ]
+        for c in calib:
+            delta_sign = "+" if c["delta"] >= 0 else ""
+            lines.append(
+                f"<code>{c['confidence_bucket']:<10} "
+                f"{c['predicted_prob']:>5}%    "
+                f"{c['actual_win_rate']:>5}%    "
+                f"{delta_sign}{c['delta']}%</code>"
+            )
+        lines.append("")
+
+    if recent:
+        best  = sorted([r for r in recent if r.get("outcome") == "win"],
+                       key=lambda x: x.get("est_odds", 0) or 0, reverse=True)[:3]
+        worst = [r for r in recent if r.get("outcome") == "loss"][-3:]
+        if best:
+            lines += ["━━━━━━━━━━━━━━━━━━━━━━", "🏆 <b>Mejores picks de la semana</b>"]
+            for r in best:
+                em = SPORT_EMO.get(r["sport"], "🎯")
+                lines.append(
+                    f"   {em} ✅ <b>{r['pick_type']}</b> "
+                    f"({r['home']} vs {r['away']})  ·  {r['run_date']}"
+                )
+            lines.append("")
+        if worst:
+            lines += ["━━━━━━━━━━━━━━━━━━━━━━", "📉 <b>Picks fallidos</b>"]
+            for r in worst:
+                em = SPORT_EMO.get(r["sport"], "🎯")
+                lines.append(
+                    f"   {em} ❌ <b>{r['pick_type']}</b> "
+                    f"({r['home']} vs {r['away']})  ·  {r['run_date']}"
+                )
+            lines.append("")
+
+    lines += [
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        "⚠️ <i>Solo análisis informativo. Juega con responsabilidad.</i>",
+        "🤖 <i>Value Bot Pro v4.6  ·  Reporte Semanal</i>",
     ]
     return "\n".join(lines)
 
