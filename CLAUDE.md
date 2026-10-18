@@ -32,15 +32,17 @@ Sin deportes activos, `main()` sale sin scrapear ni enviar (y sin resolver resul
 - No volver a hardcodear temporadas: en oct-2026 eso hizo que el bot analizara Playoffs 2025-26.
 
 ## NFL (`sports/nfl.py`, `analysis/nfl_model.py`, `analysis/nfl_picks.py`)
-- Rating por equipo: pts a favor/en contra por juego regresados a la media con `NFL_PRIOR_GAMES`=3. Con < `NFL_MIN_GAMES` (2) en la temporada actual se suman los de la anterior y el rating queda `current=False`.
-- Media de liga: los **32 equipos** (endpoint `/teams`), no solo los del día (sesgaba totales a Under).
-- Proyección aditiva + HFA 1.5; margen ~ Normal(sd 13.5), total ~ Normal(sd 13.0).
-- Probabilidad final = 0.4 modelo + 0.6 mercado sin vig. Techo 85 %, cuota mínima 1.30.
-- Líneas enteras: push modelado; confianza = P(ganar | no push); value = `p·(1−push)·cuota + push − 1`. "PK"/"EVEN" = línea 0.
-- Un pick entra si confianza ≥ `MIN_CONFIDENCE` (62) o value ≥ 0.04 con p ≥ 0.5 → casi todos los NFL son value bets 💎 de 54–58 %.
-- `data_quality` "high" solo con líneas reales, ≥ 4 juegos y ambos ratings de la temporada actual.
-- **Dedup entre corridas**: un pick por (`event_id` ESPN, `market` moneyline|spread|total), en cualquier corrida previa (`db.already_sent_for_event`). No usar `pick_type` (cambia con la línea) ni ventanas de tiempo (el runner es intermitente).
-- Quirks de ESPN: ver skill global `learned/espn-hidden-api-nfl` (rango de fechas → 400, días en hora ET, cuotas open/close, score string vs objeto).
+- **Juegos** (`get_nfl_games`): solo `season.type` 2 (regular) o 3 (postemporada) y ambos equipos entre los 32 → sin pretemporada ni Pro Bowl. Un evento mal formado se loguea y se salta (no tumba el slate). `date` en hora ET; `neutral_site` sale de `competitions[0].neutralSite`.
+- Rating por equipo: pts a favor/en contra por juego regresados a la media con `NFL_PRIOR_GAMES`=3. Con < `NFL_MIN_GAMES` (2) en la temporada actual se agregan los de la anterior en `TeamScores.previous` (pesan `NFL_PREV_SEASON_WEIGHT`=0.5) y el rating queda `current=False`. Fallos de red no se cachean.
+- Media de liga: los **32 equipos** (endpoint `/teams`, cacheado por corrida en `store.nfl_team_ids`), no solo los del día (sesgaba totales a Under). Calendarios en paralelo (`SCHEDULE_FETCH_WORKERS`=8).
+- Proyección aditiva + HFA 1.5 (0 en sede neutral); margen ~ Normal(sd 13.5), total ~ Normal(sd 13.0).
+- Probabilidad final = 0.4 modelo + 0.6 mercado sin vig. Techo 85 %, cuota mínima 1.30. **Sin cuota real del mercado no hay pick** (ni moneyline de modelo puro ni mercado 50/50 inventado).
+- Líneas enteras: push modelado; confianza = P(ganar | no push); value = `p·(1−push)·cuota + push − 1`. "PK"/"EVEN"/"EV" = línea 0. En spreads el push se escala en números clave (`NFL_KEY_MARGIN_WEIGHTS`: 3, 7, 10, 14 ↑; 0 ↓ porque casi no hay empates) sin cambiar P(cubrir | no push).
+- Un pick entra si value ≥ 0 (`NFL_MIN_PICK_VALUE`) **y** (confianza ≥ `MIN_CONFIDENCE` (62) o value ≥ 0.04) → casi todos los NFL son value bets 💎 de 54–58 %.
+- Moneyline y spread del mismo equipo (`side`) son la misma apuesta: dentro de una corrida queda el de más value (`_drop_correlated`).
+- `data_quality` "high" solo con ≥ 4 juegos y ambos ratings de la temporada actual (la cuota real ya es obligatoria).
+- **Dedup entre corridas**: un pick por (`event_id` ESPN, `market` moneyline|spread|total) en cualquier corrida previa (`db.already_sent_for_event`), y sin repetir equipo entre moneyline y spread (`db.already_sent_side_bet`, por `payload.side` o `pick_type` en filas viejas). No usar ventanas de tiempo (el runner es intermitente).
+- Quirks de ESPN: ver skill global `learned/espn-hidden-api-nfl` (rango de fechas → 400, días en hora ET, cuotas open/close, score string vs objeto). Además: campos anidados pueden venir `null` (usar `_obj`), y de open/close se toma el snapshot que traiga línea y cuota juntas.
 
 ## Fútbol (lógica Poisson, `analysis/picks.py`)
 - Over/Under 2.5 y BTTS con Poisson sobre XG `(gf_propio + ga_rival)/2`; Under solo en ligas defensivas; BTTS no se combina con Under.
@@ -55,7 +57,7 @@ Sin deportes activos, `main()` sale sin scrapear ni enviar (y sin resolver resul
 Piernas con conf ≥ 68 (fútbol) / ≥ 62 (NBA); doble ≥ 38 %, triple ≥ 27 %; ligas distintas. Picks NFL de value (< 68 %) no entran.
 
 ## Base de datos (`picks_history.db`, versionada en git)
-- `picks`: una fila por pick enviado; `payload` JSON con el resto de campos (`event_id`, `market`, `kickoff`, `lines`, `push_prob`…).
+- `picks`: una fila por pick enviado; `payload` JSON con el resto de campos (`event_id`, `market`, `side`, `kickoff`, `lines`, `push_prob`, `neutral_site`…).
 - `results`: la llena `resolver.resolve_pending_picks()` **al inicio de cada `main()` y del reporte semanal**: todos los picks pendientes NBA/NFL cuyo juego ya empezó (hasta 180 días), consultando ESPN por la fecha del juego. Push/empate → `void`. Fútbol aún no se resuelve.
 - `results.pick_id` tiene índice UNIQUE (requisito del `ON CONFLICT`; sin él el INSERT fallaba y la tabla quedó vacía meses).
 - El ROI del mensaje, el reporte semanal y la calibración (`get_calibration_factors`, solo fútbol/NBA) dependen de `results`.
