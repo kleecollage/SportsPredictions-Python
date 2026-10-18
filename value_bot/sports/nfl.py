@@ -25,8 +25,9 @@ SCHEDULE_FETCH_WORKERS = 8     # requests paralelos a ESPN para la media de liga
 
 
 class TeamScores(NamedTuple):
-    scores: list[tuple[float, float]]
+    scores: list[tuple[float, float]]           # temporada actual
     current: bool  # False si incluye la temporada anterior o no hay datos
+    previous: tuple[tuple[float, float], ...] = ()  # temporada anterior (pesa menos en el rating)
 
 
 # ── Parsing (puro) ────────────────────────────────────────────────
@@ -146,6 +147,7 @@ def parse_espn_nfl_event(event: dict, default_season_type: int | None = None) ->
         "home_record": _record(home),
         "away_record": _record(away),
         "venue":       _obj(comp, "venue").get("fullName", ""),
+        "neutral_site": bool(comp.get("neutralSite")),
         "lines":       _parse_lines(comp),
         "source":      "espn",
     }
@@ -230,8 +232,9 @@ def _fetch_scores(team_id: str, season: int) -> list[tuple[float, float]] | None
 
 def get_team_scores(team_id: str) -> TeamScores:
     """
-    Marcadores de la temporada actual. Si aún no hay NFL_MIN_GAMES, se suman
-    los de la temporada anterior (current=False) en vez de descartar los actuales.
+    Marcadores de la temporada actual. Si aún no hay NFL_MIN_GAMES, se agregan
+    los de la temporada anterior en `previous` (current=False) en vez de descartar
+    los actuales.
     Caché solo dentro de la corrida (store se limpia en cada run); los fallos de
     red no se cachean para poder reintentar.
     """
@@ -254,7 +257,7 @@ def get_team_scores(team_id: str) -> TeamScores:
         return TeamScores(current, current=False)
     log.info("NFL team %s: %d juegos en temporada actual → sumando %d juegos de %d",
              team_id, len(current), len(previous), previous_season)
-    result = TeamScores(current + previous, current=False)
+    result = TeamScores(current, current=False, previous=tuple(previous))
     store.nfl_scores_cache[team_id] = result
     return result
 
@@ -294,4 +297,4 @@ def get_league_average() -> float:
         return NFL_LEAGUE_AVG_DEFAULT
     with ThreadPoolExecutor(max_workers=SCHEDULE_FETCH_WORKERS) as pool:
         teams = list(pool.map(get_team_scores, team_ids))
-    return league_average([t.scores for t in teams])
+    return league_average([t.scores + list(t.previous) for t in teams])

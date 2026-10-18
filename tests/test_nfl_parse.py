@@ -122,8 +122,8 @@ def test_get_team_scores_combines_seasons_without_sample(monkeypatch):
     _patch_fetch(monkeypatch, {2026: [(20.0, 17.0)], 2025: [(24.0, 21.0)] * 17})
     result = nfl.get_team_scores("12")
     assert result.current is False
-    assert len(result.scores) == 18
-    assert (20.0, 17.0) in result.scores
+    assert result.scores == [(20.0, 17.0)]
+    assert result.previous == ((24.0, 21.0),) * 17
 
 
 def test_get_team_scores_does_not_fall_back_on_network_failure(monkeypatch):
@@ -304,3 +304,19 @@ def test_team_ids_are_fetched_once_per_run(monkeypatch):
     assert nfl.get_team_ids() == ["9", "6"]
     assert nfl.get_team_ids() == ["9", "6"]
     assert len(calls) == 1
+
+
+# ── Sede neutral (review nfl_model #2) ────────────────────────────
+
+def test_parse_neutral_site_flag():
+    event = _event()
+    assert parse_espn_nfl_event(event)["neutral_site"] is False
+    event["competitions"][0]["neutralSite"] = True
+    assert parse_espn_nfl_event(event)["neutral_site"] is True
+
+
+def test_get_league_average_includes_previous_season_sample(monkeypatch):
+    monkeypatch.setattr(nfl, "fetch_team_ids", lambda: ["1"])
+    monkeypatch.setattr(nfl, "get_team_scores",
+                        lambda tid: TeamScores([(30.0, 10.0)], False, ((20.0, 20.0),) * 9))
+    assert nfl.get_league_average() == pytest.approx(21.0)

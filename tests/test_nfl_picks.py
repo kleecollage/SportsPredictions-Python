@@ -23,8 +23,9 @@ def _game(home, away, home_id, away_id):
     }
 
 
-def _pick(pick_type, confidence, value, market="moneyline"):
-    return {"market": market, "type": pick_type, "confidence": confidence,
+def _pick(pick_type, confidence, value, market="moneyline", side=None):
+    return {"market": market, "side": side or pick_type.removeprefix("Victoria "),
+            "type": pick_type, "confidence": confidence,
             "our_prob": confidence / 100, "est_odds": 1.9, "value": value,
             "reasoning": "r", "data_quality": "high"}
 
@@ -37,7 +38,7 @@ def wired(monkeypatch):
     calls = []
     picks_by_home = {
         "Kansas City Chiefs": [_pick("Victoria Kansas City Chiefs", 70, 0.01)],
-        "Green Bay Packers": [_pick("Under 53.5 Puntos", 55, 0.07, market="total"),
+        "Green Bay Packers": [_pick("Under 53.5 Puntos", 55, 0.07, market="total", side="Under"),
                               _pick("Victoria Green Bay Packers", 64, None)],
     }
 
@@ -49,9 +50,11 @@ def wired(monkeypatch):
     monkeypatch.setattr(nfl_picks, "get_nfl_games", lambda: games)
     monkeypatch.setattr(nfl_picks, "get_league_average", lambda: 23.0)
     monkeypatch.setattr(nfl_picks, "get_team_scores",
-                        lambda tid: TeamScores([(24.0, 20.0)] * 6, current=tid != "6"))
+                        lambda tid: TeamScores([(24.0, 20.0)] * 6, current=tid != "6",
+                                               previous=((30.0, 10.0),) * 17 if tid == "6" else ()))
     monkeypatch.setattr(nfl_picks, "analyze_nfl_game", fake_analyze)
     monkeypatch.setattr(nfl_picks, "already_sent_for_event", lambda *_: False)
+    monkeypatch.setattr(nfl_picks, "already_sent_side_bet", lambda *_: False)
     return calls
 
 
@@ -65,6 +68,7 @@ def test_marks_ratings_from_previous_season(wired):
     gb = next(c for c in wired if c["home"] == "Green Bay Packers")
     assert gb["home_rating"]["current"] is True
     assert gb["away_rating"]["current"] is False
+    assert gb["away_rating"]["games"] == 23  # temporada anterior incluida, con menos peso
 
 
 def test_tags_picks_with_sport_and_keeps_game_lines(wired):
@@ -105,3 +109,17 @@ def test_message_renders_nfl_section(wired):
     assert "🏈 <b>NFL</b> (2 juegos  ·  3 picks  ·  1 💎 value)" in msg
     assert "Líneas: Draft Kings" in msg
     assert "Chiefs: 5-1 | Raiders: 1-5" in msg
+
+
+def test_skips_side_bet_when_same_team_was_already_sent_in_other_market(wired, monkeypatch):
+    # Corrida previa mandó "Hándicap Kansas City Chiefs": su ML es casi la misma apuesta
+    monkeypatch.setattr(nfl_picks, "already_sent_side_bet",
+                        lambda event_id, side: (event_id, side) == ("evt-12", "Kansas City Chiefs"))
+    types = [p["type"] for p in nfl_picks.get_nfl_picks()]
+    assert "Victoria Kansas City Chiefs" not in types
+    assert "Victoria Green Bay Packers" in types
+
+
+def test_totals_are_not_checked_as_side_bets(wired, monkeypatch):
+    monkeypatch.setattr(nfl_picks, "already_sent_side_bet", lambda event_id, side: side == "Under")
+    assert "Under 53.5 Puntos" in [p["type"] for p in nfl_picks.get_nfl_picks()]
