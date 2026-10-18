@@ -16,6 +16,7 @@ def _competitor(side, team_id, name, record="3-2"):
 
 def _event(status="STATUS_SCHEDULED", odds=None):
     return {
+        "id": "401772945",
         "date": "2026-10-19T00:20Z",
         "competitions": [{
             "status": {"type": {"name": status}},
@@ -46,6 +47,7 @@ def test_parse_scheduled_event_with_market():
     assert game["home"] == "Green Bay Packers" and game["home_id"] == "9"
     assert game["away"] == "Dallas Cowboys" and game["away_id"] == "6"
     assert game["home_record"] == "3-2" and game["venue"] == "Lambeau Field"
+    assert game["event_id"] == "401772945"
     m = game["lines"]
     assert m["provider"] == "Draft Kings"
     assert m["home_spread"] == 1.5

@@ -1,16 +1,11 @@
 """Picks NFL: junta datos ESPN + modelo y filtra contra la BD."""
 import logging
-from datetime import datetime
 
 from value_bot.analysis.nfl_model import analyze_nfl_game, team_rating
 from value_bot.config import MAX_PICKS_SPORT, MIN_CONFIDENCE, VALUE_THRESHOLD
 from value_bot.sports.nfl import get_league_average, get_nfl_games, get_team_scores
 
-try:
-    from value_bot.db import already_sent_today as _already_sent
-except ImportError:
-    def _already_sent(*_):
-        return False
+from value_bot.db import already_sent_for_event
 
 log = logging.getLogger(__name__)
 
@@ -34,14 +29,14 @@ def get_nfl_picks() -> list[dict]:
     avg = get_league_average()
     log.info("NFL media de liga: %.1f pts/equipo", avg)
 
-    today = datetime.now().strftime("%Y-%m-%d")
     all_picks = []
     for game in games:
         home_rating = _rating(game["home_id"], avg)
         away_rating = _rating(game["away_id"], avg)
         for pick in analyze_nfl_game(game, home_rating, away_rating, avg,
                                      min_conf=MIN_CONFIDENCE, value_threshold=VALUE_THRESHOLD):
-            if _already_sent(game["home"], game["away"], pick["type"], today):
+            # Un pick por partido y mercado, aunque el juego aparezca en varias corridas
+            if game.get("event_id") and already_sent_for_event(game["event_id"], pick["market"]):
                 continue
             all_picks.append({**game, **pick, "sport": "nfl", "flag": "🏈", "league": "NFL"})
 

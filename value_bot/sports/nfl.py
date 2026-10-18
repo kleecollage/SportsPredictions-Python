@@ -98,6 +98,7 @@ def parse_espn_nfl_event(event: dict) -> dict | None:
     kickoff = event.get("date", "")
     return {
         "sport":       "nfl",
+        "event_id":    str(event["id"]) if event.get("id") else None,
         "date":        kickoff[:10],
         "kickoff":     kickoff,
         "home":        home.get("team", {}).get("displayName", "?"),

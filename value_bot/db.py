@@ -132,6 +132,24 @@ def already_sent_today(home: str, away: str, pick_type: str, run_date: str) -> b
 
 # ── Resolución automática de resultados ──────────────────────────
 
+def already_sent_for_event(event_id: str, market: str) -> bool:
+    """
+    True si ya se envió un pick NFL de ese mercado para ese partido, en cualquier
+    corrida anterior. El runner no corre todos los días, así que la deduplicación
+    no puede depender de run_date; y usa el mercado (no pick_type) porque la
+    línea se mueve entre días ("Under 53.5" → "Under 52.5").
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute("""
+            SELECT 1 FROM picks
+            WHERE sport = 'nfl'
+              AND json_extract(payload, '$.event_id') = ?
+              AND json_extract(payload, '$.market')   = ?
+            LIMIT 1
+        """, (event_id, market)).fetchone()
+    return row is not None
+
+
 def _evaluate_pick(pick_type: str, scores: dict, home: str, away: str) -> str:
     """Evalúa si un pick ganó, perdió o queda pending según el marcador real."""
     pt    = pick_type.lower()

@@ -17,13 +17,14 @@ def _game(home, away, home_id, away_id):
     return {
         "sport": "nfl", "date": "2026-10-25", "kickoff": "2026-10-25T17:00Z",
         "home": home, "home_id": home_id, "away": away, "away_id": away_id,
-        "home_record": "5-1", "away_record": "1-5", "venue": "", "lines": LINES,
+        "event_id": f"evt-{home_id}", "home_record": "5-1", "away_record": "1-5",
+        "venue": "", "lines": LINES,
         "source": "espn",
     }
 
 
-def _pick(pick_type, confidence, value):
-    return {"market": "moneyline", "type": pick_type, "confidence": confidence,
+def _pick(pick_type, confidence, value, market="moneyline"):
+    return {"market": market, "type": pick_type, "confidence": confidence,
             "our_prob": confidence / 100, "est_odds": 1.9, "value": value,
             "reasoning": "r", "data_quality": "high"}
 
@@ -36,7 +37,7 @@ def wired(monkeypatch):
     calls = []
     picks_by_home = {
         "Kansas City Chiefs": [_pick("Victoria Kansas City Chiefs", 70, 0.01)],
-        "Green Bay Packers": [_pick("Under 53.5 Puntos", 55, 0.07),
+        "Green Bay Packers": [_pick("Under 53.5 Puntos", 55, 0.07, market="total"),
                               _pick("Victoria Green Bay Packers", 64, None)],
     }
 
@@ -50,7 +51,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(nfl_picks, "get_team_scores",
                         lambda tid: TeamScores([(24.0, 20.0)] * 6, current=tid != "6"))
     monkeypatch.setattr(nfl_picks, "analyze_nfl_game", fake_analyze)
-    monkeypatch.setattr(nfl_picks, "_already_sent", lambda *_: False)
+    monkeypatch.setattr(nfl_picks, "already_sent_for_event", lambda *_: False)
     return calls
 
 
@@ -77,11 +78,13 @@ def test_value_picks_first_then_confidence(wired):
     assert types == ["Under 53.5 Puntos", "Victoria Kansas City Chiefs", "Victoria Green Bay Packers"]
 
 
-def test_skips_picks_already_sent(wired, monkeypatch):
-    monkeypatch.setattr(nfl_picks, "_already_sent",
-                        lambda home, away, pick_type, day: pick_type == "Under 53.5 Puntos")
+def test_skips_markets_already_sent_for_that_event(wired, monkeypatch):
+    sent = {("evt-9", "moneyline")}
+    monkeypatch.setattr(nfl_picks, "already_sent_for_event",
+                        lambda event_id, market: (event_id, market) in sent)
     types = [p["type"] for p in nfl_picks.get_nfl_picks()]
-    assert "Under 53.5 Puntos" not in types and len(types) == 2
+    assert "Victoria Green Bay Packers" not in types
+    assert "Victoria Kansas City Chiefs" in types and "Under 53.5 Puntos" in types
 
 
 def test_caps_number_of_picks(wired, monkeypatch):
