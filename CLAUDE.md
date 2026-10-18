@@ -1,166 +1,74 @@
 # Value Bot Pro — Contexto del Proyecto
 
 ## Rol
-Analista Senior de Apuestas Multi-Deporte. Generar pronósticos + parlays diarios de alta probabilidad y enviarlos por Telegram.
+Analista senior de apuestas multi-deporte. Genera picks + parlays diarios y los envía por Telegram.
 
-## Script principal
-`/Users/kleec/Documents/PredictsProyect/predictions_betting_bot.py`
-Versión actual: **Value Bot Pro v4.6** (2209 líneas)
+## Ubicación y ejecución
+- Repo: `/Users/kleec/Documents/PronosticProject` — paquete `value_bot/` (los imports son `value_bot.*`; ejecutar siempre con `-m` desde la raíz).
+- Entorno: `.venv` (Python 3.14). `pip install -r requirements-dev.txt` + `playwright install chromium`.
+- Una corrida: `python -m value_bot.main` · reporte semanal: `python -m value_bot.main --weekly`
+- Scheduler: `python -m value_bot.scheduler` (APScheduler, 9:00 y lunes 9:05 **America/New_York**; jobstore en `picks_history.db`). Servicio launchd: `value_bot/scheduler.plist` → `.venv/bin/python`. Logs útiles en `scheduler_error.log` (logging va a stderr).
+- Tests: `.venv/bin/python -m pytest -q` (pytest; `tests/conftest.py` pone variables de Telegram falsas).
+- **El runner NO corre todos los días** (Mac apagada). Nada puede depender de corridas diarias ni de estado en memoria entre corridas: lo persistente va a `picks_history.db`.
 
-## Deportes soportados
+## Secretos
+- Viven en `.env` (plantilla `.env.template`): `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (obligatorios), `FOOTBALL_DATA_TOKEN`, `API_SPORTS_KEY`, `THE_ODDS_API_KEY` (opcionales).
+- **Nunca** escribir valores de secretos en este archivo, en código ni en logs. httpx está en WARNING porque loguea la URL de Telegram con el token.
+- Versiones anteriores de este archivo tenían token y key en claro (siguen en el historial de git) → rotarlos si no se ha hecho.
+
+## Deportes (`SPORTS_ENABLED` en `config.py`)
 | Deporte | Estado | Fuentes |
-|---------|--------|---------|
-| ⚽ Fútbol | ✅ Activo | football-data.org + api-football + Odds API + **Playwright Flashscore** |
-| 🏀 NBA | ✅ Activo | api-sports basketball + ESPN Hidden API + BBC + **Playwright Flashscore** |
-| ⚾ MLB | 🔜 Futuro | — |
-| 🎾 Tenis | 🔜 Futuro | — |
+|---|---|---|
+| 🏈 NFL | ✅ activo | ESPN hidden API (juegos, líneas DraftKings, marcadores) — sin key |
+| ⚽ Fútbol | ⛔ desactivado | football-data.org → api-football → The Odds API → Playwright Flashscore |
+| 🏀 NBA | ⛔ desactivado | nba_api → api-sports → ESPN → BBC → Playwright Flashscore |
 
----
+Sin deportes activos, `main()` sale sin scrapear ni enviar (y sin resolver resultados). Playwright solo corre si fútbol o NBA están activos.
 
-## Arquitectura: Sistema Híbrido Multi-Fuente
+## Temporadas (calculadas por fecha en cada llamada, `config.py`)
+- `nba_season()` / `nba_api_season()`: arranca en octubre. Fuera de abril–junio se usan stats de **temporada regular**, nunca Playoffs viejos; si un equipo tiene < `NBA_MIN_GAMES` (5) se usa la regular anterior.
+- `afl_season(info)`: ligas europeas/Liga MX por año de inicio (julio); `calendar_year: True` para MLS, Brasileirão, Libertadores, Sudamericana, Argentina; `season` explícita solo para torneos puntuales.
+- `nfl_season()`: arranca en septiembre (enero–febrero = temporada anterior).
+- No volver a hardcodear temporadas: en oct-2026 eso hizo que el bot analizara Playoffs 2025-26.
 
-### Fútbol — Capa 1: football-data.org (PRINCIPAL)
-- Free tier cubre: PL, PD, BL1, SA, FL1, CL, WC, BSA, PPL
-- Header: `X-Auth-Token`
-- Rate limit: 10 req/min → sleep de 7s entre llamadas
-- Token: registrarse en football-data.org/client/register
-- **IMPORTANTE:** No intentar MLS, Liga MX, Copa Libertadores con esta API (no están en free tier → 403/404)
+## NFL (`sports/nfl.py`, `analysis/nfl_model.py`, `analysis/nfl_picks.py`)
+- Rating por equipo: pts a favor/en contra por juego regresados a la media con `NFL_PRIOR_GAMES`=3. Con < `NFL_MIN_GAMES` (2) en la temporada actual se suman los de la anterior y el rating queda `current=False`.
+- Media de liga: los **32 equipos** (endpoint `/teams`), no solo los del día (sesgaba totales a Under).
+- Proyección aditiva + HFA 1.5; margen ~ Normal(sd 13.5), total ~ Normal(sd 13.0).
+- Probabilidad final = 0.4 modelo + 0.6 mercado sin vig. Techo 85 %, cuota mínima 1.30.
+- Líneas enteras: push modelado; confianza = P(ganar | no push); value = `p·(1−push)·cuota + push − 1`. "PK"/"EVEN" = línea 0.
+- Un pick entra si confianza ≥ `MIN_CONFIDENCE` (62) o value ≥ 0.04 con p ≥ 0.5 → casi todos los NFL son value bets 💎 de 54–58 %.
+- `data_quality` "high" solo con líneas reales, ≥ 4 juegos y ambos ratings de la temporada actual.
+- **Dedup entre corridas**: un pick por (`event_id` ESPN, `market` moneyline|spread|total), en cualquier corrida previa (`db.already_sent_for_event`). No usar `pick_type` (cambia con la línea) ni ventanas de tiempo (el runner es intermitente).
+- Quirks de ESPN: ver skill global `learned/espn-hidden-api-nfl` (rango de fechas → 400, días en hora ET, cuotas open/close, score string vs objeto).
 
-### Fútbol — Capa 2: api-football.com / api-sports.io (RESPALDO)
-- Base URL: `https://v3.football.api-sports.io`
-- Header: `x-apisports-key` (NO usar RapidAPI headers)
-- Key actual: `4fb41fb14e8ab9295631b65e1af9a3e9`
-- Dashboard: dashboard.api-sports.io
-- Plan: FREE — 100 req/día, reset a las 00:00 UTC
-- **BUG CONOCIDO RESUELTO:** `afl_current_season()` devuelve 2025 para junio 2026, pero ligas de fallback (Mundial, MLS, Brasileirao) necesitan `season=2026` explícito
+## Fútbol (lógica Poisson, `analysis/picks.py`)
+- Over/Under 2.5 y BTTS con Poisson sobre XG `(gf_propio + ga_rival)/2`; Under solo en ligas defensivas; BTTS no se combina con Under.
+- 1X2 con diff de fuerza ≥ 24 (logística), Doble Chance 12–23, Empate con diff ≤ 10 y draw_pct ≥ 26 %.
+- Máx 3 picks/partido; value bet = edge ≥ 0.04 con cuota real (The Odds API).
+- football-data.org free: solo PL, PD, BL1, SA, FL1, CL, WC, BSA, PPL (MLS/Liga MX → 403); 10 req/min (sleep 7 s). api-football: header `x-apisports-key`, 100 req/día.
 
-### Fútbol — Capa 3: The Odds API (OPCIONAL)
-- Base URL: `https://api.the-odds-api.com/v4`
-- Plan free: 500 req/mes
-- Registrarse en the-odds-api.com
-- Cuando está activa: calcula edge real (value bets marcados con 💎)
+## NBA
+- Over/Under por proyección con splits home/away; Moneyline con diff ≥ 15; Spread con diff ≥ 18; H2H solo en Playoffs/Finals.
 
-### NBA — Capa 1: api-sports basketball
-- Base URL: `https://v1.basketball.api-sports.io`
-- Header: `x-apisports-key` (misma key que api-football)
-- League ID: 12 | Season: "2025-2026"
+## Parlays (`analysis/parlays.py`)
+Piernas con conf ≥ 68 (fútbol) / ≥ 62 (NBA); doble ≥ 38 %, triple ≥ 27 %; ligas distintas. Picks NFL de value (< 68 %) no entran.
 
-### NBA — Capa 2: ESPN Hidden API
-- URL: `site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard`
-- Free, sin key, detecta NBA Finals automáticamente
-- Detecta Finals: si `datetime.now().month == 6` + texto "Finals" en `series_summary`
-
-### NBA — Capa 3: BeautifulSoup scraping BBC Sport
-- Último recurso si ESPN y api-sports fallan
-
-### Capa 4 (v4.3): Playwright Stealth — Flashscore
-- `scrape_flashscore_nba()` → NBA games (`/basketball/usa/nba/`)
-- `scrape_flashscore_football()` → Mundial 2026, MLS, Brasileirao, Copa Libertadores
-- `scrape_espn_nba_pw()` → ESPN con interceptación XHR (respaldo)
-- `run_playwright_scrapers()` → paralelo con `asyncio.gather()`, llamado desde `main()`
-- Stealth: `navigator.webdriver=undefined`, UA rotation, `window.chrome` spoofing
-- Request interception: bloquea `image/font/media/stylesheet` (+30% velocidad)
-- Delays: `_human_delay(800ms–2500ms)` entre acciones
-- Scroll infinito: `_infinite_scroll()` 3 iteraciones por página
-- CSS selectors: `.event__match`, `.event__participant--home/away`, `.event__time`
-- Fallback selectores: `[class*='homeParticipant']`, `[class*='awayParticipant']`
-- **`PLAYWRIGHT_ENABLED = True`** → cambiar a False para deshabilitar
-- Activa Football Capa 4 solo si `len(fixtures) < MIN_FIXTURES_TOP`
-- Activa NBA Capa 4 solo si todas las fuentes anteriores devuelven 0 juegos
-
----
-
-## Ligas TOP Fútbol (Capa 1 + 2)
-| Liga | FD code | AFL ID | Temporada |
-|------|---------|--------|-----------|
-| Premier League | PL | 39 | 2025 |
-| LaLiga | PD | 140 | 2025 |
-| Bundesliga | BL1 | 78 | 2025 |
-| Serie A | SA | 135 | 2025 |
-| Ligue 1 | FL1 | 61 | 2025 |
-| Champions League | CL | 2 | 2025 |
-
-## Ligas FALLBACK Fútbol (Solo api-football con season explícita)
-| Liga | AFL ID | Season |
-|------|--------|--------|
-| Mundial 2026 | 1 | 2026 |
-| MLS | 253 | 2026 |
-| Copa Libertadores | 13 | 2026 |
-| Copa Sudamericana | 11 | 2026 |
-| Brasileirao | 71 | 2026 |
-| Liga Argentina | 128 | 2026 |
-| Liga MX | 262 | 2025 |
-
----
+## Base de datos (`picks_history.db`, versionada en git)
+- `picks`: una fila por pick enviado; `payload` JSON con el resto de campos (`event_id`, `market`, `kickoff`, `lines`, `push_prob`…).
+- `results`: la llena `resolver.resolve_pending_picks()` **al inicio de cada `main()` y del reporte semanal**: todos los picks pendientes NBA/NFL cuyo juego ya empezó (hasta 180 días), consultando ESPN por la fecha del juego. Push/empate → `void`. Fútbol aún no se resuelve.
+- `results.pick_id` tiene índice UNIQUE (requisito del `ON CONFLICT`; sin él el INSERT fallaba y la tabla quedó vacía meses).
+- El ROI del mensaje, el reporte semanal y la calibración (`get_calibration_factors`, solo fútbol/NBA) dependen de `results`.
 
 ## Telegram
-- Bot Token: `8753205289:AAFXq9Z88KfTnPVP6NlsCVzcwW1HKuJZ8wI`
-- Chat ID: `-1004227148957`
-- Parse mode: **HTML** (no usar MarkdownV2 — demasiados problemas de escaping)
+Parse mode **HTML** (no MarkdownV2). Mensajes > 3900 chars se parten.
 
----
+## Convenciones
+- Commits `tipo: descripción` (feat, fix, chore, test…); sin push salvo que se pida.
+- TDD con pytest para lógica nueva; módulos de modelo puros (sin red ni BD) para poder testearlos.
+- Archivos < 800 líneas (`analysis/picks.py` ya va en ~750: separar antes de crecerlo).
 
-## Lógica de análisis
-
-### Fútbol (v4.5 — lógica Poisson)
-- **Over 2.5**: `_poisson_over(exp_h+exp_a, 2)` >= 0.50 → conf 50-80%; ligas attacking/balanced/technical
-- **Under 2.5**: `1 - over25` >= 0.52 → conf 52-78%; ligas defensive (Serie A, Copa Lib, Brasileirao…)
-- **BTTS**: `_poisson_btts(exp_h, exp_a)` >= 0.56 → conf 56-78%; no se combina con Under 2.5
-- **1X2**: diff fuerza >= 24 pts → prob vía función logística `1/(1+e^(-diff/28))` → conf 55-76%
-- **Double Chance**: diff 12–23 pts → conf 58-78%
-- **Empate (X)**: diff <= 10 + liga draw_pct >= 26% → conf 62-66%
-- **Value bet**: edge = (our_prob × real_odds) - 1 >= 0.04 → marcado con 💎
-- **Max picks/partido**: 3 (ordenados por confianza, sin redundancias)
-- **Expected Goals**: `exp_h = (gf_h + ga_a) / 2` — promedio entre ataque propio y defensa rival
-- **Estilos de liga**: attacking (BL1, MLS, UCL), defensive (SA, CopLib, Brasileirao…), technical (PD), balanced (PL, FL1, MX, WC)
-
-### NBA
-- **Over/Under**: projected_total >= 222 → Over | <= 208 → Under
-- **Moneyline**: diff de fuerza >= 20 (con +8 puntos de ventaja local)
-- **NBA Finals**: siempre aparecen al tope con sección especial 🏆
-
-### Parlays
-- Mínimo conf 67%, máximo 3 piernas
-- Cross-sport permitido → etiqueta automática "PARLAY MIXTO"
-
----
-
-## Situación (Junio 2026)
-- Ligas europeas en OFFSEASON → 0 fixtures top hasta agosto 2026
-- Mundial 2026 inicia ~11 junio 2026 → fallback principal de fútbol
-- NBA Finals activas en junio 2026 → sección destacada en mensaje
-
----
-
-## Ejecución automática en Mac
-```bash
-# Cron — 9:00 AM diario
-crontab -e
-# Agregar:
-0 9 * * * /usr/bin/python3 /Users/kleec/Documents/PredictsProyect/predictions_betting_bot.py >> /Users/kleec/Documents/PredictsProyect/bot.log 2>&1
-```
-
----
-
-## Bugs conocidos y resueltos
-1. **import os faltante** (v4.5): el refactor `.env` de la sesión anterior omitió `import os` → script fallaba en línea 79 con `NameError`. Corregido en v4.5.
-2. **Season bug**: `afl_current_season()` devolvía 2025 para ligas que necesitan 2026 → cada liga fallback tiene `season` explícito
-2. **MLS/Liga MX en football-data.org** → 403 (no están en free tier) → solo se usan vía api-football
-3. **Loop de reintentos en 403/404** → `http_get` no reintenta en errores definitivos (`skip_codes=(403,404)`)
-4. **MarkdownV2 escaping** → cambiado a HTML parse mode en todo el bot
-5. **RapidAPI headers** → cambiado a `x-apisports-key` directo en api-sports.io
-6. **`per_mode_simple` kwarg error** (v4.3) → `try/except TypeError` en `nba_get_league_stats()` para compatibilidad con versiones antiguas de nba_api
-
----
-
-## Historial de versiones
-- v1.0 ⚽: Script básico con picks estáticos (siempre "Over 1.5 Goles" al 68%)
-- v2.0 🏀: Reescritura para NBA/EuroLeague con api-sports basketball v1
-- v3.0 ⚽: Sistema híbrido fútbol multi-fuente (football-data.org + api-football + Odds API)
-- v3.1 ⚽: Fix bugs de temporada + fallback a api-football directo para ligas no en FD free tier
-- **v1.0 Pro ⚽🏀**: Multi-deporte con ESPN Hidden API + BBC scraping + parlays cross-sport
-- **v4.2 ⚽🏀**: nba_api integrado, 3-5 picks/juego, parlays automáticos 62%+, formato agrupado por partido, sección upcoming
-- **v4.3 ⚽🏀**: Playwright stealth Capa 4 (Flashscore NBA+Fútbol), UA rotation, request interception, scroll infinito, fix nba_api per_mode_simple
-- **v4.4 ⚽🏀**: BUGFIX NBA Over Points (normalization totales→per-game), sanity check 180-275pts, LEAGUE_AVERAGES fútbol, Double Chance picks, NBA Spread+TeamTotal, múltiples picks/partido fútbol, parlays same-sport
-- **v4.5 ⚽🏀**: FIX CRÍTICO import os, probabilidades Poisson reales, Under 2.5 nuevo mercado, picks por estilo de liga, max 3 picks/partido, reasoning con XG, 1X2 logístico, Double Chance 12-23pts
-- **v4.6 ⚽🏀**: Deduplicación por (liga × tipo) máx 2, reasoning único por equipo, parlays min 68%+diversidad+prob≥38%, no-stats usa históricos directos (ACTUAL)
+## Pendientes conocidos
+- Resolución de picks de fútbol.
+- Mundial 2026 sigue en ligas de respaldo y Flashscore aunque ya terminó (gasta cuota de api-football si entra el fallback).
+- `picks_history.db` cambia en cada corrida → aparece modificado en git.
