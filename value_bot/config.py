@@ -157,6 +157,8 @@ LEAGUE_AVG_DEFAULT = {
 
 # ── Logging ───────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+# httpx loguea la URL completa en INFO, y la URL de Telegram incluye el bot token
+logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
 
 
