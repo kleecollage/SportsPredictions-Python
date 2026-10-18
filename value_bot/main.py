@@ -25,7 +25,11 @@ log = logging.getLogger(__name__)
 
 async def main():
     log.info("═══ Value Bot Pro v4.6 · Multi-Deporte + Playwright ═══")
-    log.info("Deportes activos: %s", [k for k, v in SPORTS_ENABLED.items() if v])
+    active_sports = [k for k, v in SPORTS_ENABLED.items() if v]
+    log.info("Deportes activos: %s", active_sports)
+    if not active_sports:
+        log.info("Sin deportes activos en SPORTS_ENABLED → no se scrapea ni se envía mensaje")
+        return
     log.info("nba_api disponible: %s | playwright: %s", _NBA_API_OK, PLAYWRIGHT_OK)
 
     # Limpiar caches del run anterior para garantizar datos frescos
