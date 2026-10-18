@@ -40,8 +40,8 @@ ESPN_NBA_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/sco
 
 # ── Sports toggles ────────────────────────────────────────────────
 SPORTS_ENABLED = {
-    "football": True,
-    "nba":      True,
+    "football": False,
+    "nba":      False,
 }
 
 # ── Thresholds ────────────────────────────────────────────────────
