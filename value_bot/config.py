@@ -44,7 +44,7 @@ ESPN_NFL_SCHEDULE_URL = "https://site.api.espn.com/apis/site/v2/sports/football/
 SPORTS_ENABLED = {
     "football": False,
     "nba":      False,
-    "nfl":      False,
+    "nfl":      True,
 }
 
 # ── Thresholds ────────────────────────────────────────────────────
