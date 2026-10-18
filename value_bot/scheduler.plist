@@ -5,7 +5,7 @@
     Value Bot Pro — launchd service (Mac)
 
     Instalación:
-        cp /Users/kleec/Documents/pronostic_project/value_bot/scheduler.plist \
+        cp /Users/kleec/Documents/PronosticProject/value_bot/scheduler.plist \
            ~/Library/LaunchAgents/com.valuebot.scheduler.plist
         launchctl load ~/Library/LaunchAgents/com.valuebot.scheduler.plist
 
@@ -13,8 +13,8 @@
         launchctl unload ~/Library/LaunchAgents/com.valuebot.scheduler.plist
 
     Ver logs:
-        tail -f /Users/kleec/Documents/pronostic_project/scheduler.log
-        tail -f /Users/kleec/Documents/pronostic_project/scheduler_error.log
+        tail -f /Users/kleec/Documents/PronosticProject/scheduler.log
+        tail -f /Users/kleec/Documents/PronosticProject/scheduler_error.log
 -->
 <plist version="1.0">
 <dict>
@@ -23,13 +23,13 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
+        <string>/Users/kleec/Documents/PronosticProject/.venv/bin/python</string>
         <string>-m</string>
         <string>value_bot.scheduler</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/kleec/Documents/pronostic_project</string>
+    <string>/Users/kleec/Documents/PronosticProject</string>
 
     <!-- Arrancar al hacer login y mantener vivo si se cae -->
     <key>RunAtLoad</key>
@@ -43,10 +43,10 @@
     <integer>10</integer>
 
     <key>StandardOutPath</key>
-    <string>/Users/kleec/Documents/pronostic_project/scheduler.log</string>
+    <string>/Users/kleec/Documents/PronosticProject/scheduler.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/kleec/Documents/pronostic_project/scheduler_error.log</string>
+    <string>/Users/kleec/Documents/PronosticProject/scheduler_error.log</string>
 
     <!-- Variables de entorno (alternativa a .env si no usas dotenv) -->
     <!-- Descomenta y completa si no tienes .env en el directorio de trabajo
