@@ -1,3 +1,5 @@
+import logging
+import threading
 from datetime import datetime, timezone
 
 import pytest
@@ -14,10 +16,18 @@ def _competitor(side, team_id, name, record="3-2"):
     }
 
 
-def _event(status="STATUS_SCHEDULED", odds=None):
+@pytest.fixture(autouse=True)
+def _clean_store():
+    nfl.store.clear_run_caches()
+    yield
+    nfl.store.clear_run_caches()
+
+
+def _event(status="STATUS_SCHEDULED", odds=None, season_type=2):
     return {
         "id": "401772945",
         "date": "2026-10-19T00:20Z",
+        "season": {"year": 2026, "type": season_type},
         "competitions": [{
             "status": {"type": {"name": status}},
             "venue": {"fullName": "Lambeau Field"},
@@ -145,3 +155,152 @@ def test_espn_query_dates_use_us_eastern_day():
     # 02:00 UTC del 19-oct = 22:00 ET del 18-oct: la jornada ESPN sigue siendo el 18
     now = datetime(2026, 10, 19, 2, 0, tzinfo=timezone.utc)
     assert espn_query_dates(now, days_ahead=2) == ["20261018", "20261019", "20261020"]
+
+
+# ── Tipo de temporada: sin pretemporada ni Pro Bowl (review #1) ───
+
+def test_parse_skips_preseason_event():
+    assert parse_espn_nfl_event(_event(season_type=1)) is None
+
+
+def test_parse_accepts_postseason_event():
+    assert parse_espn_nfl_event(_event(season_type=3)) is not None
+
+
+def test_parse_uses_board_season_type_when_event_lacks_it():
+    event = _event()
+    del event["season"]
+    assert parse_espn_nfl_event(event, default_season_type=2) is not None
+    assert parse_espn_nfl_event(event, default_season_type=1) is None
+
+
+def test_parse_skips_event_with_unknown_season_type():
+    event = _event()
+    del event["season"]
+    assert parse_espn_nfl_event(event) is None
+
+
+def test_league_games_drops_teams_outside_the_league():
+    pro_bowl = {"home_id": "31", "away_id": "32"}
+    regular = {"home_id": "9", "away_id": "6"}
+    assert nfl.league_games([pro_bowl, regular], {"9", "6"}) == [regular]
+
+
+def test_league_games_keeps_everything_when_team_list_unavailable():
+    games = [{"home_id": "31", "away_id": "32"}]
+    assert nfl.league_games(games, set()) == games
+
+
+# ── Robustez ante nulls y eventos mal formados (review #2) ────────
+
+def test_parse_tolerates_null_nested_fields():
+    event = _event()
+    comp = event["competitions"][0]
+    comp["venue"] = None
+    comp["odds"][0]["provider"] = None
+    comp["odds"][0]["moneyline"]["home"] = None
+    comp["competitors"][0]["records"] = None
+    game = parse_espn_nfl_event(event)
+    assert game["venue"] == "" and game["home_record"] == ""
+    assert "provider" not in game["lines"] and "home_ml" not in game["lines"]
+    assert game["lines"]["away_ml"] == pytest.approx(1.893, abs=0.001)
+
+
+def test_parse_null_status_is_not_scheduled():
+    event = _event()
+    event["competitions"][0]["status"] = None
+    assert parse_espn_nfl_event(event) is None
+
+
+def test_get_nfl_games_skips_malformed_event_and_keeps_the_rest(monkeypatch):
+    broken = _event()
+    broken["competitions"][0]["competitors"] = "garbage"
+    boards = iter([{"events": [broken, _event()]}])
+    monkeypatch.setattr(nfl, "http_get", lambda url, params=None: next(boards, {}))
+    monkeypatch.setattr(nfl, "fetch_team_ids", lambda: ["9", "6"])
+    games = nfl.get_nfl_games()
+    assert [g["event_id"] for g in games] == ["401772945"]
+
+
+# ── Temporada anterior fallida no se cachea (review #3 y #4) ──────
+
+def test_get_team_scores_does_not_cache_when_previous_season_fails(monkeypatch, caplog):
+    _patch_fetch(monkeypatch, {2026: [(20.0, 17.0)], 2025: None})
+    with caplog.at_level(logging.WARNING, logger=nfl.log.name):
+        result = nfl.get_team_scores("12")
+    assert result == TeamScores([(20.0, 17.0)], current=False)
+    assert "12" not in nfl.store.nfl_scores_cache
+    assert "2025" in caplog.text
+
+
+def test_get_team_scores_logs_games_added_not_season_year(monkeypatch, caplog):
+    _patch_fetch(monkeypatch, {2026: [(20.0, 17.0)], 2025: [(24.0, 21.0)] * 17})
+    with caplog.at_level(logging.INFO, logger=nfl.log.name):
+        nfl.get_team_scores("12")
+    assert "sumando 17 juegos de 2025" in caplog.text
+
+
+# ── Snapshots de línea open/close (review #5) ─────────────────────
+
+def test_parse_lines_uses_open_when_close_lacks_odds():
+    event = _event()
+    ml = event["competitions"][0]["odds"][0]["moneyline"]
+    ml["home"] = {"close": {"odds": None}, "open": {"odds": "+140"}}
+    assert parse_espn_nfl_event(event)["lines"]["home_ml"] == pytest.approx(2.4)
+
+
+def test_parse_lines_keeps_line_and_odds_from_the_same_snapshot():
+    event = _event()
+    spread = event["competitions"][0]["odds"][0]["pointSpread"]
+    spread["home"] = {"close": {"line": "+2.5"}, "open": {"line": "+1.5", "odds": "-110"}}
+    lines = parse_espn_nfl_event(event)["lines"]
+    assert lines["home_spread"] == 1.5
+    assert lines["home_spread_odds"] == pytest.approx(1.909, abs=0.001)
+
+
+def test_parse_lines_merges_fields_when_no_snapshot_is_complete():
+    event = _event()
+    spread = event["competitions"][0]["odds"][0]["pointSpread"]
+    spread["home"] = {"close": {"line": "+2.5"}, "open": {"odds": "-110"}}
+    lines = parse_espn_nfl_event(event)["lines"]
+    assert lines["home_spread"] == 2.5
+    assert lines["home_spread_odds"] == pytest.approx(1.909, abs=0.001)
+
+
+# ── Prefijos o/u en mayúscula (review #6) ─────────────────────────
+
+def test_parse_total_with_uppercase_prefix():
+    event = _event()
+    odds = event["competitions"][0]["odds"][0]
+    del odds["overUnder"]
+    odds["total"]["over"]["close"]["line"] = "O 47.5"
+    assert parse_espn_nfl_event(event)["lines"]["total"] == 47.5
+
+
+# ── Fecha del juego en hora del este (review #7) ──────────────────
+
+def test_parse_date_is_eastern_day_for_night_games():
+    # 00:20 UTC del 19-oct = 20:20 ET del 18-oct (Sunday Night Football)
+    assert parse_espn_nfl_event(_event())["date"] == "2026-10-18"
+
+
+# ── Media de liga en paralelo (review #8) ─────────────────────────
+
+def test_get_league_average_fetches_teams_concurrently(monkeypatch):
+    monkeypatch.setattr(nfl, "fetch_team_ids", lambda: ["1", "2"])
+    barrier = threading.Barrier(2, timeout=2)
+
+    def scores(tid):
+        barrier.wait()  # en serie nunca llegan dos hilos → BrokenBarrierError
+        return TeamScores([(21.0, 21.0)] * 6, True)
+
+    monkeypatch.setattr(nfl, "get_team_scores", scores)
+    assert nfl.get_league_average() == pytest.approx(21.0)
+
+
+def test_team_ids_are_fetched_once_per_run(monkeypatch):
+    calls = []
+    monkeypatch.setattr(nfl, "fetch_team_ids", lambda: calls.append(1) or ["9", "6"])
+    assert nfl.get_team_ids() == ["9", "6"]
+    assert nfl.get_team_ids() == ["9", "6"]
+    assert len(calls) == 1

@@ -15,6 +15,7 @@ class DataStore:
 
         # NFL caches
         self.nfl_scores_cache: dict = {}    # team_id → [(pts_favor, pts_contra), ...]
+        self.nfl_team_ids: list = []        # IDs ESPN de los 32 equipos
 
         # The Odds API cache
         self.odds_cache: dict = {}
@@ -26,6 +27,7 @@ class DataStore:
         self.nba_splits_cache.clear()
         self.nba_h2h_cache.clear()
         self.nfl_scores_cache.clear()
+        self.nfl_team_ids = []
         self.pw_nba_games = []
         self.pw_football_fixtures = []
         # odds_cache se puede reutilizar dentro del mismo run pero no entre días
