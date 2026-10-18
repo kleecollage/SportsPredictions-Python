@@ -7,6 +7,7 @@ log = logging.getLogger(__name__)
 MIN_CONF_P_FB = 68
 MIN_PROB_2    = 0.38
 MIN_PROB_3    = 0.27
+SPORT_EMOJI   = {"football": "⚽", "nba": "🏀", "nfl": "🏈"}
 
 
 def build_parlays(all_picks):
@@ -98,9 +99,7 @@ def build_parlays(all_picks):
         co, cp = combined_stats(best_2)
         multi     = is_multi_sport(best_2)
         sport_tag = " MIXTO" if multi else ""
-        label = (f"⚡ PARLAY DOBLE ⚽{sport_tag}"
-                 if best_2[0].get("sport") == "football"
-                 else f"⚡ PARLAY DOBLE 🏀{sport_tag}")
+        label = f"⚡ PARLAY DOBLE {SPORT_EMOJI.get(best_2[0].get('sport'), '🎯')}{sport_tag}"
         parlays.append({"label": label, "legs": best_2,
                         "combined_odds": co, "combined_prob": cp})
 
@@ -113,7 +112,7 @@ def build_parlays(all_picks):
 
     if best_3:
         co, cp = combined_stats(best_3)
-        sport_em = "⚽" if best_3[0].get("sport") == "football" else "🏀"
+        sport_em = SPORT_EMOJI.get(best_3[0].get("sport"), "🎯")
         parlays.append({"label": f"🔥 PARLAY TRIPLE {sport_em}",
                         "legs": best_3,
                         "combined_odds": co, "combined_prob": cp})

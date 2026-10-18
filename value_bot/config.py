@@ -37,11 +37,14 @@ ODDS_BASE        = "https://api.the-odds-api.com/v4"
 
 # ── ESPN ──────────────────────────────────────────────────────────
 ESPN_NBA_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+ESPN_NFL_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
+ESPN_NFL_SCHEDULE_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_id}/schedule"
 
 # ── Sports toggles ────────────────────────────────────────────────
 SPORTS_ENABLED = {
     "football": False,
     "nba":      False,
+    "nfl":      False,
 }
 
 # ── Thresholds ────────────────────────────────────────────────────
@@ -62,6 +65,8 @@ PLAYWRIGHT_TIMEOUT = 30_000  # ms
 NBA_SEASON_START_MONTH  = 10   # la NBA arranca en octubre
 EURO_SEASON_START_MONTH = 7    # ligas europeas / Liga MX arrancan en julio-agosto
 NBA_MIN_GAMES           = 5    # menos juegos = muestra no fiable → temporada anterior
+NFL_SEASON_START_MONTH  = 9    # la temporada regular NFL arranca en septiembre
+NFL_MIN_GAMES           = 2    # el rating NFL ya regresa a la media; 2 juegos bastan
 
 
 def nba_season_start_year(offset: int = 0) -> int:
@@ -80,6 +85,13 @@ def nba_api_season(offset: int = 0) -> str:
     """Formato nba_api: '2026-27'."""
     start = nba_season_start_year(offset)
     return f"{start}-{str(start + 1)[-2:]}"
+
+
+def nfl_season(offset: int = 0) -> int:
+    """Año de inicio de la temporada NFL (enero-febrero = playoffs del año anterior)."""
+    now = datetime.now()
+    start = now.year if now.month >= NFL_SEASON_START_MONTH else now.year - 1
+    return start + offset
 
 
 def afl_season(info: dict) -> int:

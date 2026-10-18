@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 DAYS_ES   = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
 MONTHS_ES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
              "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
-SPORT_EMO = {"football": "⚽", "nba": "🏀"}
+SPORT_EMO = {"football": "⚽", "nba": "🏀", "nfl": "🏈"}
 
 
 def bar(pct, n=8):
@@ -93,6 +93,15 @@ def _game_block(group):
             lines.append(f"   📊 <code>{gi['home'].split()[-1]}: {h_rec or '—'} | "
                          f"{gi['away'].split()[-1]}: {a_rec or '—'}</code>")
 
+    if sport == "nfl":
+        h_rec = gi.get("home_record") or "—"
+        a_rec = gi.get("away_record") or "—"
+        lines.append(f"   📊 <code>{gi['home'].split()[-1]}: {h_rec} | "
+                     f"{gi['away'].split()[-1]}: {a_rec}</code>")
+        provider = (gi.get("lines") or {}).get("provider")
+        if provider:
+            lines.append(f"   💵 <i>Líneas: {provider}</i>")
+
     if gi.get("series_summary"):
         lines.append(f"   🏆 <i>{gi['series_summary']}</i>")
 
@@ -149,7 +158,7 @@ def _performance_block(perf: dict) -> str:
     return "\n".join(lines)
 
 
-def build_message(fp, np, parlays, upcoming=None, perf=None):
+def build_message(fp, np, parlays, upcoming=None, perf=None, nflp=None):
     now = datetime.now()
     ds  = f"{DAYS_ES[now.weekday()]}, {now.day} de {MONTHS_ES[now.month-1]} de {now.year}"
 
@@ -160,7 +169,8 @@ def build_message(fp, np, parlays, upcoming=None, perf=None):
         "",
     ]
 
-    if not fp and not np:
+    nflp = nflp or []
+    if not fp and not np and not nflp:
         lines += [
             "⚠️ <b>Sin partidos disponibles hoy</b>",
             "",
@@ -168,7 +178,7 @@ def build_message(fp, np, parlays, upcoming=None, perf=None):
             "<i>El bot verificará automáticamente mañana.</i>",
         ]
     else:
-        total = len(fp) + len(np)
+        total = len(fp) + len(np) + len(nflp)
         lines.append(f"🎯 <b>{total} picks generados hoy</b>")
         lines.append("")
 
@@ -206,6 +216,20 @@ def build_message(fp, np, parlays, upcoming=None, perf=None):
             lines += [
                 "━━━━━━━━━━━━━━━━━━━━━━",
                 f"⚽ <b>FÚTBOL</b> ({len(groups)} partido{'s' if len(groups)>1 else ''}  ·  {len(fp)} picks{vsub})",
+                "━━━━━━━━━━━━━━━━━━━━━━",
+                "",
+            ]
+            for g in groups:
+                lines.extend(_game_block(g))
+            lines.append("")
+
+        if nflp:
+            vcount = sum(1 for p in nflp if p.get("value") and p["value"] >= VALUE_THRESHOLD)
+            vsub   = f"  ·  {vcount} 💎 value{'s' if vcount>1 else ''}" if vcount else ""
+            groups = _group_picks_by_game(nflp)
+            lines += [
+                "━━━━━━━━━━━━━━━━━━━━━━",
+                f"🏈 <b>NFL</b> ({len(groups)} juego{'s' if len(groups)>1 else ''}  ·  {len(nflp)} picks{vsub})",
                 "━━━━━━━━━━━━━━━━━━━━━━",
                 "",
             ]

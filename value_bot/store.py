@@ -13,6 +13,9 @@ class DataStore:
         self.nba_splits_cache: dict = {}    # (team_name, location) → splits
         self.nba_h2h_cache: dict = {}       # (home, away) → h2h stats
 
+        # NFL caches
+        self.nfl_scores_cache: dict = {}    # team_id → [(pts_favor, pts_contra), ...]
+
         # The Odds API cache
         self.odds_cache: dict = {}
 
@@ -22,6 +25,7 @@ class DataStore:
         self.nba_team_form_cache.clear()
         self.nba_splits_cache.clear()
         self.nba_h2h_cache.clear()
+        self.nfl_scores_cache.clear()
         self.pw_nba_games = []
         self.pw_football_fixtures = []
         # odds_cache se puede reutilizar dentro del mismo run pero no entre días
