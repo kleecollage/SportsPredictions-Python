@@ -4,8 +4,6 @@ import logging
 import sqlite3
 from pathlib import Path
 
-from value_bot.config import ESPN_NBA_URL, http_get
-
 try:
     import pandas as pd
     _PANDAS_OK = True
@@ -62,8 +60,32 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_picks_sport_league
             ON picks (sport, league, run_date)
         """)
+        _dedupe_results(conn)
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_results_pick_id
+            ON results (pick_id)
+        """)
         conn.commit()
     log.info("DB inicializada: %s", DB_PATH)
+
+
+def _dedupe_results(conn: sqlite3.Connection) -> None:
+    """
+    Deja un solo resultado por pick antes de crear el índice UNIQUE: el resuelto
+    (no 'pending') más reciente. BDs anteriores no tenían la restricción.
+    """
+    removed = conn.execute("""
+        DELETE FROM results WHERE id NOT IN (
+            SELECT id FROM (
+                SELECT id, ROW_NUMBER() OVER (
+                    PARTITION BY pick_id ORDER BY outcome = 'pending', id DESC
+                ) AS rn
+                FROM results
+            ) WHERE rn = 1
+        )
+    """).rowcount
+    if removed:
+        log.warning("DB: %d resultados duplicados eliminados (pick_id repetido)", removed)
 
 
 # ── Escritura ─────────────────────────────────────────────────────
@@ -130,8 +152,6 @@ def already_sent_today(home: str, away: str, pick_type: str, run_date: str) -> b
     return row is not None
 
 
-# ── Resolución automática de resultados ──────────────────────────
-
 def already_sent_for_event(event_id: str, market: str) -> bool:
     """
     True si ya se envió un pick NFL de ese mercado para ese partido, en cualquier
@@ -150,117 +170,51 @@ def already_sent_for_event(event_id: str, market: str) -> bool:
     return row is not None
 
 
-def _evaluate_pick(pick_type: str, scores: dict, home: str, away: str) -> str:
-    """Evalúa si un pick ganó, perdió o queda pending según el marcador real."""
-    pt    = pick_type.lower()
-    total = scores["total"]
-    h_sc  = scores["home_score"]
-    a_sc  = scores["away_score"]
+# ── Resultados ────────────────────────────────────────────────────
 
-    if "over" in pt:
-        try:
-            line = float(pt.split("over")[1].strip().split()[0])
-            return "win" if total > line else "loss"
-        except (ValueError, IndexError):
-            return "pending"
-
-    if "under" in pt:
-        try:
-            line = float(pt.split("under")[1].strip().split()[0])
-            return "win" if total < line else "loss"
-        except (ValueError, IndexError):
-            return "pending"
-
-    if "victoria" in pt or "win" in pt:
-        winner = home if h_sc > a_sc else away
-        return "win" if winner.lower() in pt else "loss"
-
-    if "hándicap" in pt or "handicap" in pt:
-        try:
-            spread = float(pt.split("-")[1].split()[0])
-            return "win" if (h_sc - a_sc) > spread else "loss"
-        except (ValueError, IndexError):
-            return "pending"
-
-    return "pending"
-
-
-def resolve_nba_picks_auto(run_date: str) -> int:
-    """
-    Resuelve picks de NBA del run_date consultando ESPN API.
-    Solo actúa sobre partidos con status STATUS_FINAL.
-    Retorna número de picks resueltos.
-    """
+def save_result(pick_id: int, outcome: str, actual_score: str | None,
+                profit_units: float | None, source: str = "espn_auto") -> None:
+    """Inserta o actualiza el resultado de un pick (uno por pick_id)."""
     with sqlite3.connect(DB_PATH) as conn:
-        pending = conn.execute("""
-            SELECT p.id, p.home, p.away, p.pick_type, p.est_odds
-            FROM picks p
-            LEFT JOIN results r ON r.pick_id = p.id
-            WHERE p.run_date = ?
-              AND p.sport    = 'nba'
-              AND (r.id IS NULL OR r.outcome = 'pending')
-        """, (run_date,)).fetchall()
-
-    if not pending:
-        return 0
-
-    espn_data = http_get(
-        ESPN_NBA_URL,
-        params={"dates": run_date.replace("-", "")},
-    )
-
-    scores = {}
-    for event in espn_data.get("events", []):
-        comps = event.get("competitions", [])
-        if not comps:
-            continue
-        comp   = comps[0]
-        status = comp.get("status", {}).get("type", {}).get("name", "")
-        if status != "STATUS_FINAL":
-            continue
-        competitors = comp.get("competitors", [])
-        home_c = next((c for c in competitors if c.get("homeAway") == "home"), None)
-        away_c = next((c for c in competitors if c.get("homeAway") == "away"), None)
-        if not (home_c and away_c):
-            continue
-        h_name  = home_c["team"]["displayName"]
-        a_name  = away_c["team"]["displayName"]
-        h_score = int(home_c.get("score", 0))
-        a_score = int(away_c.get("score", 0))
-        scores[(h_name[:8].lower(), a_name[:8].lower())] = {
-            "home_score": h_score,
-            "away_score": a_score,
-            "total":      h_score + a_score,
-        }
-
-    resolved = 0
-    with sqlite3.connect(DB_PATH) as conn:
-        for pick_id, home, away, pick_type, est_odds in pending:
-            key = (home[:8].lower(), away[:8].lower())
-            sc  = scores.get(key)
-            if not sc:
-                continue
-
-            outcome = _evaluate_pick(pick_type, sc, home, away)
-            if outcome == "pending":
-                continue
-
-            profit = round(est_odds - 1, 4) if outcome == "win" else -1.0
-            conn.execute("""
-                INSERT INTO results (pick_id, outcome, actual_score, profit_units, resolved_at, source)
-                VALUES (?, ?, ?, ?, datetime('now'), 'api_auto')
-                ON CONFLICT(pick_id) DO UPDATE SET
-                    outcome=excluded.outcome,
-                    actual_score=excluded.actual_score,
-                    profit_units=excluded.profit_units,
-                    resolved_at=excluded.resolved_at
-            """, (pick_id, outcome, f"{sc['home_score']}-{sc['away_score']}", profit))
-            resolved += 1
-
+        conn.execute("""
+            INSERT INTO results (pick_id, outcome, actual_score, profit_units, resolved_at, source)
+            VALUES (?, ?, ?, ?, datetime('now'), ?)
+            ON CONFLICT(pick_id) DO UPDATE SET
+                outcome=excluded.outcome,
+                actual_score=excluded.actual_score,
+                profit_units=excluded.profit_units,
+                resolved_at=excluded.resolved_at,
+                source=excluded.source
+        """, (pick_id, outcome, actual_score, profit_units, source))
         conn.commit()
 
-    log.info("DB: %d picks NBA resueltos automáticamente para %s", resolved, run_date)
-    return resolved
+
+def get_unresolved_picks(sports: tuple[str, ...]) -> list[dict]:
+    """
+    Picks sin resultado (o 'pending') con el payload JSON ya decodificado.
+    No filtra por fecha: quien resuelve decide con el kickoff del payload.
+    """
+    marks = ",".join("?" * len(sports))
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(f"""
+            SELECT p.id, p.sport, p.home, p.away, p.pick_type, p.est_odds, p.payload
+            FROM picks p
+            LEFT JOIN results r ON r.pick_id = p.id
+            WHERE p.sport IN ({marks})
+              AND (r.id IS NULL OR r.outcome = 'pending')
+            ORDER BY p.id
+        """, sports).fetchall()
+
+    cols = ("id", "sport", "home", "away", "pick_type", "est_odds")
+    return [{**dict(zip(cols, r[:6])), "payload": _load_payload(r[6])} for r in rows]
+
+
+def _load_payload(raw: str | None) -> dict:
+    try:
+        payload = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 # ── Análisis y ROI ────────────────────────────────────────────────

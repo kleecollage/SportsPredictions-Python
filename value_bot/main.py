@@ -14,7 +14,8 @@ from value_bot.analysis.parlays import build_parlays
 from value_bot.scrapers.espn import get_upcoming_nba_events
 from value_bot.telegram_sender import build_message, build_weekly_report, send_telegram
 from value_bot.store import store
-from value_bot.db import init_db, save_picks, resolve_nba_picks_auto, get_roi_summary, get_model_calibration, get_recent_picks
+from value_bot.db import init_db, save_picks, get_roi_summary, get_model_calibration, get_recent_picks
+from value_bot.resolver import resolve_pending_picks
 
 try:
     from value_bot.sports.nba import NBA_API_OK as _NBA_API_OK
@@ -22,6 +23,14 @@ except ImportError:
     _NBA_API_OK = False
 
 log = logging.getLogger(__name__)
+
+
+def _resolve_results():
+    """Resuelve picks pendientes; un fallo aquí no debe frenar el envío."""
+    try:
+        resolve_pending_picks()
+    except Exception:
+        log.exception("Resolución de resultados falló")
 
 
 async def main():
@@ -36,8 +45,9 @@ async def main():
     # Limpiar caches del run anterior para garantizar datos frescos
     store.clear_run_caches()
 
-    # Inicializar DB de historial
+    # Inicializar DB de historial y resolver juegos ya terminados (para el ROI del mensaje)
     init_db()
+    _resolve_results()
 
     # Capa 4: Playwright scrapers antes de generar picks (solo cubre fútbol/NBA)
     if SPORTS_ENABLED.get("football") or SPORTS_ENABLED.get("nba"):
@@ -66,13 +76,6 @@ async def main():
     # Persistir picks del día
     inserted = save_picks(run_date, all_picks)
 
-    # Resolver automáticamente picks de NBA del día anterior via ESPN
-    from datetime import timedelta
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    resolved  = resolve_nba_picks_auto(yesterday)
-    if resolved:
-        log.info("Auto-resolved %d NBA picks de %s", resolved, yesterday)
-
     log.info("═══ ✓ Enviado | ⚽%d 🏀%d 🏈%d | Parlays:%d | DB:%d picks ═══",
              len(football_picks), len(nba_picks), len(nfl_picks), len(parlays), inserted)
 
@@ -81,6 +84,7 @@ async def weekly_report():
     """Envía reporte semanal completo. Diseñado para correr cada lunes."""
     log.info("═══ Value Bot Pro — Reporte Semanal ═══")
     init_db()
+    _resolve_results()
     roi    = get_roi_summary(days=7)
     calib  = get_model_calibration(min_picks=5)
     recent = get_recent_picks(days=7)
