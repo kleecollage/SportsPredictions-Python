@@ -4,8 +4,8 @@ import logging
 from datetime import datetime, timedelta
 
 from value_bot.config import (
-    ABB_BASE, NBA_LEAGUE_ID, NBA_SEASON, NBA_API_SEASON,
-    DAYS_AHEAD, api_sports_get,
+    ABB_BASE, NBA_LEAGUE_ID, NBA_MIN_GAMES,
+    DAYS_AHEAD, api_sports_get, nba_season, nba_api_season,
 )
 from value_bot.store import store
 from value_bot.scrapers.espn import espn_nba_games, espn_parse_nba, scrape_bbc_sport_nba
@@ -32,6 +32,19 @@ def _is_nba_playoffs_month():
     return datetime.now().month in (4, 5, 6)
 
 
+def _nba_stat_sources() -> list[tuple[str, str]]:
+    """(temporada nba_api, tipo) en orden de prioridad.
+
+    En meses de Playoffs: Playoffs y luego regular de la temporada actual.
+    Resto del año: regular actual y, si aún no hay muestra (inicio de
+    temporada), la regular anterior. Nunca Playoffs viejos fuera de abril-junio.
+    """
+    current, previous = nba_api_season(), nba_api_season(offset=-1)
+    if _is_nba_playoffs_month():
+        return [(current, "Playoffs"), (current, "Regular Season")]
+    return [(current, "Regular Season"), (previous, "Regular Season")]
+
+
 def _nba_find_team_id(name):
     if not NBA_API_OK:
         return None
@@ -49,33 +62,34 @@ def _nba_find_team_id(name):
     return None
 
 
-def nba_get_league_stats(season_type="Playoffs"):
+def nba_get_league_stats(season, season_type):
     """LeagueDashTeamStats with cache. Returns {team_name: {ppg, opp_ppg, win_pct, gp, pm}}"""
-    if season_type in store.nba_league_cache:
-        return store.nba_league_cache[season_type]
+    cache_key = (season, season_type)
+    if cache_key in store.nba_league_cache:
+        return store.nba_league_cache[cache_key]
     if not NBA_API_OK:
         return {}
     try:
         time.sleep(0.8)
         try:
             ls = leaguedashteamstats.LeagueDashTeamStats(
-                season=NBA_API_SEASON,
+                season=season,
                 season_type_all_star=season_type,
                 per_mode_simple="PerGame",
             )
         except TypeError:
             ls = leaguedashteamstats.LeagueDashTeamStats(
-                season=NBA_API_SEASON,
+                season=season,
                 season_type_all_star=season_type,
             )
         df = ls.get_data_frames()[0]
         if df.empty:
-            store.nba_league_cache[season_type] = {}
+            store.nba_league_cache[cache_key] = {}
             return {}
         result = {}
         for _, row in df.iterrows():
             gp = int(row.get("GP", 0) or 0)
-            if gp == 0:
+            if gp < NBA_MIN_GAMES:
                 continue
             w       = int(row.get("W", 0) or 0)
             pts_raw = float(row.get("PTS", 0) or 0)
@@ -93,12 +107,12 @@ def nba_get_league_stats(season_type="Playoffs"):
                 "gp":      gp,
                 "pm":      pm,
             }
-        store.nba_league_cache[season_type] = result
-        log.info("nba_api %s stats: %d equipos", season_type, len(result))
+        store.nba_league_cache[cache_key] = result
+        log.info("nba_api %s %s stats: %d equipos", season, season_type, len(result))
         return result
     except Exception as e:
-        log.warning("nba_api LeagueDash (%s): %s", season_type, e)
-        store.nba_league_cache[season_type] = {}
+        log.warning("nba_api LeagueDash (%s %s): %s", season, season_type, e)
+        store.nba_league_cache[cache_key] = {}
         return {}
 
 
@@ -114,14 +128,14 @@ def nba_get_team_form(team_name):
         log.warning("nba_api: equipo no encontrado: '%s'", team_name)
         store.nba_team_form_cache[team_name] = {}
         return {}
-    for stype in ("Playoffs", "Regular Season"):
+    for season, stype in _nba_stat_sources():
         try:
             time.sleep(0.6)
             tgl = teamgamelog.TeamGameLog(
-                team_id=tid, season=NBA_API_SEASON, season_type_all_star=stype
+                team_id=tid, season=season, season_type_all_star=stype
             )
             df = tgl.get_data_frames()[0]
-            if df.empty or len(df) < 2:
+            if df.empty or len(df) < NBA_MIN_GAMES:
                 continue
             r5   = df.head(5)
             form = "".join(r5["WL"].tolist())
@@ -133,20 +147,21 @@ def nba_get_team_form(team_name):
                 "win_rate":   round(float((df["WL"] == "W").mean() * 100), 1),
                 "played":     len(df),
                 "stype":      stype,
+                "season":     season,
             }
             store.nba_team_form_cache[team_name] = res
             return res
         except Exception as e:
-            log.warning("nba_api TeamGameLog (%s, %s): %s", team_name, stype, e)
+            log.warning("nba_api TeamGameLog (%s, %s %s): %s", team_name, season, stype, e)
     store.nba_team_form_cache[team_name] = {}
     return {}
 
 
 def nba_get_team_full_stats(team_name):
-    """Combines LeagueDash + GameLog. Priority: Playoffs > Regular Season."""
+    """Combines LeagueDash + GameLog. Prioridad según _nba_stat_sources()."""
     ls = {}
-    for stype in ("Playoffs", "Regular Season"):
-        candidates = nba_get_league_stats(stype)
+    for season, stype in _nba_stat_sources():
+        candidates = nba_get_league_stats(season, stype)
         if not candidates:
             continue
         ls = candidates.get(team_name, {})
@@ -190,7 +205,7 @@ def nba_get_team_full_stats(team_name):
 
 def get_nba_team_stats_apisports(team_id):
     data = api_sports_get(ABB_BASE, "statistics", {
-        "team": team_id, "league": NBA_LEAGUE_ID, "season": NBA_SEASON,
+        "team": team_id, "league": NBA_LEAGUE_ID, "season": nba_season(),
     })
     resp = data.get("response", {})
     if not resp:
@@ -251,20 +266,20 @@ def nba_get_home_away_splits(team_name: str, location: str) -> dict:
         store.nba_splits_cache[cache_key] = empty
         return empty
 
-    for season_type in ("Playoffs", "Regular Season"):
+    for season, season_type in _nba_stat_sources():
         try:
             time.sleep(0.8)
             try:
                 dash = teamdashboardbygeneralsplits.TeamDashboardByGeneralSplits(
                     team_id=tid,
-                    season=NBA_API_SEASON,
+                    season=season,
                     season_type_all_star=season_type,
                     per_mode_simple="PerGame",
                 )
             except TypeError:
                 dash = teamdashboardbygeneralsplits.TeamDashboardByGeneralSplits(
                     team_id=tid,
-                    season=NBA_API_SEASON,
+                    season=season,
                     season_type_all_star=season_type,
                 )
             # El DataFrame "LocationTeamDashboard" tiene filas "Home" y "Road"
@@ -279,7 +294,7 @@ def nba_get_home_away_splits(team_name: str, location: str) -> dict:
 
             row = rows.iloc[0]
             gp = int(row.get("GP", 0) or 0)
-            if gp < 2:
+            if gp < NBA_MIN_GAMES:
                 continue
 
             pts_raw = float(row.get("PTS", 0) or 0)
@@ -311,8 +326,8 @@ def nba_get_home_away_splits(team_name: str, location: str) -> dict:
                 "source":  f"nba_api_splits_{season_type.replace(' ','_').lower()}",
             }
             store.nba_splits_cache[cache_key] = result
-            log.info("Splits %s (%s, %s): ppg=%.1f opp=%.1f",
-                     team_name, location, season_type, pts, pts - pm)
+            log.info("Splits %s (%s, %s %s): ppg=%.1f opp=%.1f",
+                     team_name, location, season, season_type, pts, pts - pm)
             return result
 
         except Exception as exc:
@@ -452,7 +467,7 @@ def get_nba_games():
 
         # Source 1: api-sports basketball
         data = api_sports_get(ABB_BASE, "games", {
-            "league": NBA_LEAGUE_ID, "season": NBA_SEASON, "date": date_str,
+            "league": NBA_LEAGUE_ID, "season": nba_season(), "date": date_str,
         })
         for g in data.get("response", [])[:8]:
             teams  = g.get("teams", {})

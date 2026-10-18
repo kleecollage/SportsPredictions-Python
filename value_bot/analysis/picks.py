@@ -42,6 +42,14 @@ def _form_emoji(form):
 
 # ── Poisson helpers ───────────────────────────────────────────────
 
+def _form_txt(stats: dict) -> str:
+    """'forma WWDLW (10 pts)' o 'sin forma reciente' si la fuente no la trae."""
+    form = stats.get("form") or ""
+    if not form:
+        return "sin forma reciente"
+    return f"forma {form} ({stats.get('form_pts', 0)} pts)"
+
+
 def _poisson_p(lam: float, k: int) -> float:
     return math.exp(-lam) * (lam ** k) / math.factorial(k)
 
@@ -256,7 +264,7 @@ def analyze_nba_game(game):
             "our_prob": half_prob,
             "est_odds": est_odds(half_prob),
             "value": None,
-            "reasoning": (f"Ritmo alto de salida esperado en Playoffs. "
+            "reasoning": (f"Ritmo alto de salida esperado. "
                           f"Total proyectado ~{projected:.0f}pts → "
                           f"~{half_line:.0f}pts en 1ª mitad{ctx}"),
             "data_quality": "medium",
@@ -287,14 +295,14 @@ def analyze_nba_game(game):
             "confidence": 63, "our_prob": 0.63,
             "est_odds": 1.87, "value": None,
             "reasoning": (f"{game['home']} ({h_rec}) vs {game['away']} ({a_rec}). "
-                          f"Promedio NBA Playoffs ≥ 215pts{ctx}"),
+                          f"Promedio NBA ≥ 215pts{ctx}"),
             "data_quality": "low",
         })
         picks.append({
             "type": f"1ª Mitad Over {round(base_line * 0.49, 1)}",
             "confidence": 62, "our_prob": 0.62,
             "est_odds": 1.85, "value": None,
-            "reasoning": (f"Ritmo elevado esperado en Playoffs. "
+            "reasoning": (f"Ritmo elevado esperado. "
                           f"~{base_line * 0.49:.0f}pts en 1ª mitad{ctx}"),
             "data_quality": "low",
         })
@@ -593,7 +601,7 @@ def analyze_football_match(fix, hs, as_):
             "est_odds": est_odds(prob),
             "value": None,
             "reasoning": (f"{fix['home']}: {hs.get('win_rate', 0):.0f}% victorias, "
-                          f"forma {hs.get('form', '?')} ({hs.get('form_pts', 0)} pts últimos 5). "
+                          f"{_form_txt(hs)}. "
                           f"Ventaja sobre {fix['away']}: {diff:.0f} pts fuerza."),
             "data_quality": "high",
         }
@@ -613,7 +621,7 @@ def analyze_football_match(fix, hs, as_):
             "est_odds": est_odds(prob),
             "value": None,
             "reasoning": (f"{fix['away']}: {as_.get('win_rate', 0):.0f}% victorias, "
-                          f"forma {as_.get('form', '?')} ({as_.get('form_pts', 0)} pts). "
+                          f"{_form_txt(as_)}. "
                           f"Ventaja visitante: {abs(diff):.0f} pts — inusual pero estadísticamente clara."),
             "data_quality": "high",
         }
@@ -655,14 +663,14 @@ def analyze_football_match(fix, hs, as_):
             raw_p   = 1.0 / (1.0 + math.exp(-diff / 22.0))
             dc_prob = round(min(0.78, 0.62 + (raw_p - 0.5) * 0.55), 3)
             dc_ctx  = (f"{fix['home']}: {hs.get('win_rate', 0):.0f}% victorias, "
-                       f"forma {hs.get('form', '?')} ({hs.get('form_pts', 0)} pts). "
+                       f"{_form_txt(hs)}. "
                        f"Ventaja local de {diff:.0f} pts → 1X más seguro que 1 directo.")
         else:
             dc_type = f"Doble Chance {fix['away']} (X2)"
             raw_p   = 1.0 / (1.0 + math.exp(-abs(diff) / 22.0))
             dc_prob = round(min(0.76, 0.60 + (raw_p - 0.5) * 0.52), 3)
             dc_ctx  = (f"{fix['away']}: {as_.get('win_rate', 0):.0f}% victorias, "
-                       f"forma {as_.get('form', '?')} ({as_.get('form_pts', 0)} pts). "
+                       f"{_form_txt(as_)}. "
                        f"Ventaja visitante {abs(diff):.0f} pts — X2 cubre victoria o empate.")
         picks.append({
             "type": dc_type,

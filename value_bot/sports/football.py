@@ -7,7 +7,7 @@ from value_bot.config import (
     FOOTBALL_DATA_TOKEN, AFL_BASE, DAYS_AHEAD, MIN_FIXTURES_TOP,
     THE_ODDS_API_KEY, ODDS_BASE,
     TOP_LEAGUES_FOOTBALL, FALLBACK_LEAGUES_FOOTBALL,
-    fd_get, api_sports_get, http_get,
+    fd_get, api_sports_get, http_get, afl_season,
 )
 from value_bot.store import store
 
@@ -141,7 +141,7 @@ def _parse_afl_fix(m, league, info, date):
     return {
         "sport": "football", "league": league, "flag": info["flag"],
         "fd_code": info.get("fd"), "afl_lid": info.get("afl"),
-        "afl_season": info.get("afl_s") or info.get("season"),
+        "afl_season": afl_season(info),
         "odds_key": info.get("odds"),
         "date": date, "kickoff": m.get("fixture", {}).get("date", ""),
         "home": home.get("name", "?"), "home_id_afl": home.get("id"),
@@ -170,7 +170,7 @@ def collect_football_fixtures():
                     fixtures.append({
                         "sport": "football", "league": name, "flag": info["flag"],
                         "fd_code": info["fd"], "afl_lid": info["afl"],
-                        "afl_season": info["afl_s"], "odds_key": info.get("odds"),
+                        "afl_season": afl_season(info), "odds_key": info.get("odds"),
                         "date": (m.get("utcDate") or "")[:10],
                         "kickoff": m.get("utcDate", ""),
                         "home": h.get("name", "?"), "home_id_fd": h.get("id"),
@@ -182,7 +182,7 @@ def collect_football_fixtures():
             for d in range(DAYS_AHEAD + 1):
                 ds = (today + timedelta(days=d)).strftime("%Y-%m-%d")
                 raw = api_sports_get(AFL_BASE, "fixtures",
-                                     {"league": info["afl"], "season": info["afl_s"], "date": ds})
+                                     {"league": info["afl"], "season": afl_season(info), "date": ds})
                 for m in raw.get("response", [])[:4]:
                     p = _parse_afl_fix(m, name, info, ds)
                     if p:
@@ -199,7 +199,7 @@ def collect_football_fixtures():
                     break
                 ds = (today + timedelta(days=d)).strftime("%Y-%m-%d")
                 raw = api_sports_get(AFL_BASE, "fixtures",
-                                     {"league": info["afl"], "season": info["season"], "date": ds})
+                                     {"league": info["afl"], "season": afl_season(info), "date": ds})
                 for m in raw.get("response", [])[:4]:
                     p = _parse_afl_fix(m, name, info, ds)
                     if p:
@@ -229,11 +229,9 @@ def collect_football_fixtures():
 # Cache nombre→id para no llamar a /teams?search= dos veces por el mismo equipo
 _team_id_cache: dict = {}
 
-# Mapa de nombre de liga → (afl_id, season) para Flashscore fixtures sin IDs
-_LEAGUE_AFL_MAP: dict = {
-    **{name: (info["afl"], info["afl_s"])   for name, info in TOP_LEAGUES_FOOTBALL.items()},
-    **{name: (info["afl"], info["season"])  for name, info in FALLBACK_LEAGUES_FOOTBALL.items()},
-}
+# Mapa de nombre de liga → info de liga para Flashscore fixtures sin IDs.
+# La temporada se resuelve con afl_season() en el momento de usarla.
+_LEAGUE_AFL_MAP: dict = {**TOP_LEAGUES_FOOTBALL, **FALLBACK_LEAGUES_FOOTBALL}
 
 
 def _resolve_team_id_by_name(team_name: str, league_id: int, season: int) -> int | None:
@@ -390,11 +388,11 @@ def build_football_stats(fixtures):
             continue
         seen.add(tname)
 
-        league_meta = _LEAGUE_AFL_MAP.get(league_name)
-        if not league_meta:
+        league_info = _LEAGUE_AFL_MAP.get(league_name)
+        if not league_info:
             log.debug("Sin mapeo AFL para liga '%s' (equipo: %s)", league_name, tname)
             continue
-        lid, season = league_meta
+        lid, season = league_info["afl"], afl_season(league_info)
 
         tid = _resolve_team_id_by_name(tname, lid, season)
         if not tid:

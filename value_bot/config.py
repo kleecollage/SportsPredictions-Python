@@ -2,6 +2,7 @@ import os
 import time
 import logging
 import requests
+from datetime import datetime
 
 try:
     from dotenv import load_dotenv
@@ -55,10 +56,44 @@ MIN_FIXTURES_TOP = 3
 PLAYWRIGHT_ENABLED = True
 PLAYWRIGHT_TIMEOUT = 30_000  # ms
 
+# ── Temporadas ────────────────────────────────────────────────────
+# Se calculan en cada llamada (no al importar) para que el scheduler,
+# que vive meses, cambie de temporada solo.
+NBA_SEASON_START_MONTH  = 10   # la NBA arranca en octubre
+EURO_SEASON_START_MONTH = 7    # ligas europeas / Liga MX arrancan en julio-agosto
+NBA_MIN_GAMES           = 5    # menos juegos = muestra no fiable → temporada anterior
+
+
+def nba_season_start_year(offset: int = 0) -> int:
+    now = datetime.now()
+    start = now.year if now.month >= NBA_SEASON_START_MONTH else now.year - 1
+    return start + offset
+
+
+def nba_season(offset: int = 0) -> str:
+    """Formato api-sports basketball: '2026-2027'."""
+    start = nba_season_start_year(offset)
+    return f"{start}-{start + 1}"
+
+
+def nba_api_season(offset: int = 0) -> str:
+    """Formato nba_api: '2026-27'."""
+    start = nba_season_start_year(offset)
+    return f"{start}-{str(start + 1)[-2:]}"
+
+
+def afl_season(info: dict) -> int:
+    """Temporada api-football de una liga: explícita si la fija, si no por fecha."""
+    if info.get("season"):
+        return info["season"]
+    now = datetime.now()
+    if info.get("calendar_year"):
+        return now.year
+    return now.year if now.month >= EURO_SEASON_START_MONTH else now.year - 1
+
+
 # ── NBA API ───────────────────────────────────────────────────────
 NBA_LEAGUE_ID  = "12"
-NBA_SEASON     = "2025-2026"
-NBA_API_SEASON = "2025-26"
 
 # ── Stealth browser ───────────────────────────────────────────────
 USER_AGENTS = [
@@ -79,22 +114,23 @@ STEALTH_SCRIPT = """
 
 # ── Football leagues ──────────────────────────────────────────────
 TOP_LEAGUES_FOOTBALL = {
-    "Premier League":   {"fd": "PL",  "afl": 39,  "afl_s": 2025, "flag": "🏴󠁧󠁢󠁥󠁮󠁧󠁿", "odds": "soccer_epl"},
-    "LaLiga":           {"fd": "PD",  "afl": 140, "afl_s": 2025, "flag": "🇪🇸", "odds": "soccer_spain_la_liga"},
-    "Bundesliga":       {"fd": "BL1", "afl": 78,  "afl_s": 2025, "flag": "🇩🇪", "odds": "soccer_germany_bundesliga"},
-    "Serie A":          {"fd": "SA",  "afl": 135, "afl_s": 2025, "flag": "🇮🇹", "odds": "soccer_italy_serie_a"},
-    "Ligue 1":          {"fd": "FL1", "afl": 61,  "afl_s": 2025, "flag": "🇫🇷", "odds": "soccer_france_ligue_one"},
-    "Champions League": {"fd": "CL",  "afl": 2,   "afl_s": 2025, "flag": "🏆", "odds": "soccer_uefa_champs_league"},
+    "Premier League":   {"fd": "PL",  "afl": 39,  "flag": "🏴󠁧󠁢󠁥󠁮󠁧󠁿", "odds": "soccer_epl"},
+    "LaLiga":           {"fd": "PD",  "afl": 140, "flag": "🇪🇸", "odds": "soccer_spain_la_liga"},
+    "Bundesliga":       {"fd": "BL1", "afl": 78,  "flag": "🇩🇪", "odds": "soccer_germany_bundesliga"},
+    "Serie A":          {"fd": "SA",  "afl": 135, "flag": "🇮🇹", "odds": "soccer_italy_serie_a"},
+    "Ligue 1":          {"fd": "FL1", "afl": 61,  "flag": "🇫🇷", "odds": "soccer_france_ligue_one"},
+    "Champions League": {"fd": "CL",  "afl": 2,   "flag": "🏆", "odds": "soccer_uefa_champs_league"},
 }
 
+# season explícita solo para torneos puntuales; calendar_year = temporada = año natural
 FALLBACK_LEAGUES_FOOTBALL = {
     "Mundial 2026":      {"afl": 1,   "season": 2026, "flag": "🌍", "odds": "soccer_fifa_world_cup"},
-    "MLS":               {"afl": 253, "season": 2026, "flag": "🇺🇸", "odds": "soccer_usa_mls"},
-    "Copa Libertadores": {"afl": 13,  "season": 2026, "flag": "🌎", "odds": None},
-    "Copa Sudamericana": {"afl": 11,  "season": 2026, "flag": "🌎", "odds": None},
-    "Brasileirao":       {"afl": 71,  "season": 2026, "flag": "🇧🇷", "odds": "soccer_brazil_campeonato"},
-    "Liga Argentina":    {"afl": 128, "season": 2026, "flag": "🇦🇷", "odds": None},
-    "Liga MX":           {"afl": 262, "season": 2025, "flag": "🇲🇽", "odds": None},
+    "MLS":               {"afl": 253, "calendar_year": True, "flag": "🇺🇸", "odds": "soccer_usa_mls"},
+    "Copa Libertadores": {"afl": 13,  "calendar_year": True, "flag": "🌎", "odds": None},
+    "Copa Sudamericana": {"afl": 11,  "calendar_year": True, "flag": "🌎", "odds": None},
+    "Brasileirao":       {"afl": 71,  "calendar_year": True, "flag": "🇧🇷", "odds": "soccer_brazil_campeonato"},
+    "Liga Argentina":    {"afl": 128, "calendar_year": True, "flag": "🇦🇷", "odds": None},
+    "Liga MX":           {"afl": 262, "flag": "🇲🇽", "odds": None},
 }
 
 # style: "attacking" | "defensive" | "technical" | "balanced"
