@@ -15,7 +15,7 @@ Funciones puras: no hacen requests ni leen la BD.
 """
 import math
 
-from value_bot.config import edge, est_odds
+from value_bot.config import est_odds
 
 NFL_HFA           = 1.5    # ventaja de local moderna (~1.5 pts, era ~3 antes de 2020)
 NFL_MARGIN_SD     = 13.5   # desviación estándar histórica del margen final
@@ -58,15 +58,18 @@ def no_vig_pair(odds_a: float, odds_b: float) -> tuple[float, float]:
 # ── Ratings y proyección ──────────────────────────────────────────
 
 def team_rating(scores: list[tuple[float, float]], league_avg: float,
-                prior_games: int = NFL_PRIOR_GAMES) -> dict:
-    """scores = [(pts_a_favor, pts_en_contra), ...] → {pf, pa, games}."""
+                prior_games: int = NFL_PRIOR_GAMES, current_season: bool = True) -> dict:
+    """
+    scores = [(pts_a_favor, pts_en_contra), ...] → {pf, pa, games, current}.
+    current=False si la muestra incluye la temporada anterior.
+    """
     n = len(scores)
     if n == 0:
-        return {"pf": league_avg, "pa": league_avg, "games": 0}
+        return {"pf": league_avg, "pa": league_avg, "games": 0, "current": current_season}
     prior = league_avg * prior_games
     pf = (sum(s[0] for s in scores) + prior) / (n + prior_games)
     pa = (sum(s[1] for s in scores) + prior) / (n + prior_games)
-    return {"pf": pf, "pa": pa, "games": n}
+    return {"pf": pf, "pa": pa, "games": n, "current": current_season}
 
 
 def project_game(home: dict, away: dict, league_avg: float,
@@ -88,13 +91,42 @@ def win_prob(margin: float, sd: float = NFL_MARGIN_SD) -> float:
     return _normal_cdf(margin / sd)
 
 
+def _outcomes(expected: float, threshold: float, sd: float) -> tuple[float, float, float]:
+    """
+    (P(x > threshold), P(x == threshold), P(x < threshold)) para un resultado
+    entero x ~ Normal(expected, sd). Líneas .5 no tienen push; las enteras
+    usan corrección de continuidad (±0.5) para la masa del empate.
+    """
+    if float(threshold).is_integer():
+        upper = _normal_cdf((threshold + 0.5 - expected) / sd)
+        lower = _normal_cdf((threshold - 0.5 - expected) / sd)
+        return 1 - upper, upper - lower, lower
+    below = _normal_cdf((threshold - expected) / sd)
+    return 1 - below, 0.0, below
+
+
+def spread_outcomes(margin: float, home_line: float,
+                    sd: float = NFL_MARGIN_SD) -> tuple[float, float, float]:
+    """(local cubre, push, local no cubre). home_line negativa = local favorito."""
+    return _outcomes(margin, -home_line, sd)
+
+
+def total_outcomes(total: float, line: float,
+                   sd: float = NFL_TOTAL_SD) -> tuple[float, float, float]:
+    """(Over, push, Under)."""
+    return _outcomes(total, line, sd)
+
+
 def cover_prob(margin: float, home_line: float, sd: float = NFL_MARGIN_SD) -> float:
-    """P(local cubre). home_line negativa = local favorito (ej. -3.5)."""
-    return _normal_cdf((margin + home_line) / sd)
+    """P(local cubre | no hay push)."""
+    win, _, lose = spread_outcomes(margin, home_line, sd)
+    return win / (win + lose)
 
 
 def over_prob(total: float, line: float, sd: float = NFL_TOTAL_SD) -> float:
-    return 1 - _normal_cdf((line - total) / sd)
+    """P(Over | no hay push)."""
+    over, _, under = total_outcomes(total, line, sd)
+    return over / (over + under)
 
 
 def blend(model_p: float, market_p: float, model_weight: float = NFL_MODEL_WEIGHT) -> float:
@@ -103,25 +135,38 @@ def blend(model_p: float, market_p: float, model_weight: float = NFL_MODEL_WEIGH
 
 # ── Picks ─────────────────────────────────────────────────────────
 
+def _push_txt(push: float) -> str:
+    return f" (push {push:.0%})" if push >= 0.005 else ""
+
+
 def _pct(prob: float) -> str:
     """Mismo número que la barra de confianza (truncado y con techo)."""
     return f"{int(min(prob, NFL_MAX_PROB) * 100)}%"
 
 
 def _fmt_line(line: float) -> str:
-    return f"{line:+.1f}"
+    return "PK" if line == 0 else f"{line:+.1f}"
+
+
+def _expected_value(prob: float, odds: float, push: float) -> float:
+    """
+    EV por unidad. prob = P(ganar | no push); con push se devuelve la apuesta.
+    Sin push equivale a config.edge().
+    """
+    return round(prob * (1 - push) * odds + push - 1, 4)
 
 
 def _build_pick(market_name: str, pick_type: str, prob: float, odds: float | None,
-                reasoning: str, data_quality: str) -> dict:
+                reasoning: str, data_quality: str, push: float = 0.0) -> dict:
     prob = min(prob, NFL_MAX_PROB)
     pick = {
         "market":       market_name,
         "type":         pick_type,
         "confidence":   int(prob * 100),
         "our_prob":     round(prob, 3),
+        "push_prob":    round(push, 3),
         "est_odds":     odds if odds else est_odds(prob),
-        "value":        edge(prob, odds) if odds else None,
+        "value":        _expected_value(prob, odds, push) if odds else None,
         "reasoning":    reasoning,
         "data_quality": data_quality,
     }
@@ -158,9 +203,10 @@ def _spread_pick(game, margin, market, proj_txt, dq):
     side_line = line if is_home else -line
     prob = p_home if is_home else 1 - p_home
     odds = h_odds if is_home else a_odds
+    _, push, _ = spread_outcomes(margin, line)
     return _build_pick("spread", f"Hándicap {side} {_fmt_line(side_line)}", prob, odds,
                        f"{proj_txt}. Mercado {game['home']} {_fmt_line(line)} "
-                       f"→ {side} cubre en {_pct(prob)}.", dq)
+                       f"→ {side} cubre en {_pct(prob)}{_push_txt(push)}.", dq, push)
 
 
 def _total_pick(game, total, market, proj_txt, dq):
@@ -175,8 +221,10 @@ def _total_pick(game, total, market, proj_txt, dq):
     prob = p_over if is_over else 1 - p_over
     label = "Over" if is_over else "Under"
     odds = o_odds if is_over else u_odds
+    _, push, _ = total_outcomes(total, line)
     return _build_pick("total", f"{label} {line:.1f} Puntos", prob, odds,
-                       f"{proj_txt}. Total proyectado {total:.1f} vs línea {line:.1f}.", dq)
+                       f"{proj_txt}. Total proyectado {total:.1f} vs línea {line:.1f}"
+                       f"{_push_txt(push)}.", dq, push)
 
 
 def _qualifies(pick: dict, min_conf: int, value_threshold: float) -> bool:
@@ -199,8 +247,10 @@ def analyze_nfl_game(game: dict, home_rating: dict, away_rating: dict, league_av
     margin, total = exp_h - exp_a, exp_h + exp_a
     market = game.get("lines") or {}
 
+    # "high" solo con líneas reales y muestra suficiente de la temporada en curso
     min_games = min(home_rating["games"], away_rating["games"])
-    dq = "high" if (market and min_games >= NFL_HIGH_DQ_GAMES) else "medium"
+    both_current = home_rating.get("current", True) and away_rating.get("current", True)
+    dq = "high" if (market and both_current and min_games >= NFL_HIGH_DQ_GAMES) else "medium"
     proj_txt = (f"Proyección {game['home']} {exp_h:.1f} – {exp_a:.1f} {game['away']} "
                 f"(margen {margin:+.1f})")
 

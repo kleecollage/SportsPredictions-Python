@@ -39,6 +39,7 @@ ODDS_BASE        = "https://api.the-odds-api.com/v4"
 ESPN_NBA_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 ESPN_NFL_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
 ESPN_NFL_SCHEDULE_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_id}/schedule"
+ESPN_NFL_TEAMS_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams"
 
 # ── Sports toggles ────────────────────────────────────────────────
 SPORTS_ENABLED = {

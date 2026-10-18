@@ -9,15 +9,17 @@ from value_bot.analysis.nfl_model import (
     no_vig_pair,
     over_prob,
     project_game,
+    spread_outcomes,
     team_rating,
+    total_outcomes,
     win_prob,
 )
 
 LEAGUE_AVG = 22.0
 
 
-def _rating(pf, pa, games=6):
-    return {"pf": pf, "pa": pa, "games": games}
+def _rating(pf, pa, games=6, current=True):
+    return {"pf": pf, "pa": pa, "games": games, "current": current}
 
 
 def _game(market=None):
@@ -73,7 +75,12 @@ def test_team_rating_regresses_toward_league_average():
 
 def test_team_rating_without_games_is_league_average():
     rating = team_rating([], league_avg=LEAGUE_AVG)
-    assert rating == {"pf": LEAGUE_AVG, "pa": LEAGUE_AVG, "games": 0}
+    assert rating == {"pf": LEAGUE_AVG, "pa": LEAGUE_AVG, "games": 0, "current": True}
+
+
+def test_team_rating_flags_previous_season_data():
+    rating = team_rating([(24, 20)], league_avg=LEAGUE_AVG, current_season=False)
+    assert rating["current"] is False
 
 
 def test_project_game_equal_teams_only_home_field_advantage():
@@ -162,3 +169,54 @@ def test_pick_market_key_does_not_clash_with_game_lines():
     picks = analyze_nfl_game(game, _rating(30, 17), _rating(16, 28), league_avg=LEAGUE_AVG)
     merged = {**game, **picks[0]}
     assert merged["lines"] == FULL_MARKET
+
+
+# ── Push en líneas enteras (#5) ───────────────────────────────────
+
+def test_spread_outcomes_half_point_line_has_no_push():
+    win, push, lose = spread_outcomes(margin=3, home_line=-3.5)
+    assert push == 0
+    assert win + lose == pytest.approx(1.0)
+
+
+def test_spread_outcomes_integer_line_has_push_mass():
+    win, push, lose = spread_outcomes(margin=3, home_line=-3)
+    assert 0.02 < push < 0.05
+    assert win == pytest.approx(lose)
+    assert win + push + lose == pytest.approx(1.0)
+
+
+def test_total_outcomes_integer_line_has_push_mass():
+    over, push, under = total_outcomes(total=47, line=47)
+    assert push > 0
+    assert over == pytest.approx(under)
+
+
+def test_spread_pick_value_accounts_for_push_refund():
+    market = {**FULL_MARKET, "home_spread": -3.0, "home_spread_odds": 2.10, "away_spread_odds": 1.75}
+    picks = analyze_nfl_game(_game(market), _rating(27, 20), _rating(20, 27), league_avg=LEAGUE_AVG)
+    spread = next(p for p in picks if p["market"] == "spread")
+    _, push, _ = spread_outcomes(margin=14 + 1.5, home_line=-3.0)
+    expected = spread["our_prob"] * (1 - push) * 2.10 + push - 1
+    assert spread["push_prob"] == pytest.approx(push, abs=0.001)
+    assert spread["value"] == pytest.approx(expected, abs=0.002)
+
+
+def test_pick_em_line_is_shown_as_pk():
+    market = {**FULL_MARKET, "home_spread": 0.0, "home_spread_odds": 2.20, "away_spread_odds": 1.70}
+    picks = analyze_nfl_game(_game(market), _rating(27, 20), _rating(20, 27), league_avg=LEAGUE_AVG)
+    spread = next(p for p in picks if p["market"] == "spread")
+    assert spread["type"] == "Hándicap Kansas City Chiefs PK"
+
+
+# ── data_quality (#4) ─────────────────────────────────────────────
+
+def test_data_quality_high_only_with_market_and_current_season():
+    picks = analyze_nfl_game(_game(FULL_MARKET), _rating(30, 17), _rating(16, 28), league_avg=LEAGUE_AVG)
+    assert all(p["data_quality"] == "high" for p in picks)
+
+
+def test_data_quality_medium_when_ratings_come_from_previous_season():
+    picks = analyze_nfl_game(_game(FULL_MARKET), _rating(30, 17, games=17, current=False),
+                             _rating(16, 28), league_avg=LEAGUE_AVG)
+    assert picks and all(p["data_quality"] == "medium" for p in picks)
