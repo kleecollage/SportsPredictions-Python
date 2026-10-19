@@ -1,8 +1,14 @@
 import pytest
 
+from value_bot.analysis import nfl_model
 from value_bot.analysis.nfl_model import (
     NFL_HFA,
+    NFL_MAX_ODDS,
+    NFL_MAX_PICK_VALUE,
+    NFL_MODEL_WEIGHT,
+    NFL_MODEL_WEIGHT_MEDIUM_DQ,
     _drop_correlated,
+    _margin_pmf,
     NFL_PREV_SEASON_WEIGHT,
     american_to_decimal,
     analyze_nfl_game,
@@ -77,7 +83,8 @@ def test_team_rating_regresses_toward_league_average():
 
 def test_team_rating_without_games_is_league_average():
     rating = team_rating([], league_avg=LEAGUE_AVG)
-    assert rating == {"pf": LEAGUE_AVG, "pa": LEAGUE_AVG, "games": 0, "current": True}
+    assert rating == {"pf": LEAGUE_AVG, "pa": LEAGUE_AVG, "games": 0, "previous_games": 0,
+                      "current": True}
 
 
 def test_team_rating_flags_previous_season_data():
@@ -108,7 +115,7 @@ def test_win_prob_is_half_for_zero_margin_and_increases():
 
 
 def test_cover_prob_is_half_when_margin_equals_line():
-    assert cover_prob(margin=3, home_line=-3) == pytest.approx(0.5)
+    assert cover_prob(margin=3, home_line=-3) == pytest.approx(0.5, abs=0.01)
     assert cover_prob(margin=7, home_line=-3) > 0.5
     assert cover_prob(margin=0, home_line=-3) < 0.5
 
@@ -149,19 +156,19 @@ def test_analyze_even_matchup_without_value_returns_no_picks():
 
 
 def test_analyze_includes_value_pick_below_min_confidence():
-    # El modelo proyecta 50 pts y el mercado pone 41.5: el Over no llega a 62%
+    # El modelo proyecta 50 pts y el mercado pone 44.5: el Over no llega a 62%
     # de confianza tras mezclar con el mercado, pero sí tiene edge positivo.
-    market = {**FULL_MARKET, "total": 41.5, "over_odds": 2.05, "under_odds": 1.80}
+    market = {**FULL_MARKET, "total": 44.5, "over_odds": 2.05, "under_odds": 1.80}
     picks = analyze_nfl_game(_game(market), _rating(24, 23), _rating(23, 24), league_avg=LEAGUE_AVG)
     over = next(p for p in picks if p["market"] == "total")
-    assert over["type"].startswith("Over 41.5")
+    assert over["type"].startswith("Over 44.5")
     assert over["confidence"] < 62
     assert over["value"] >= 0.04
 
 
-def test_analyze_returns_at_most_three_picks_sorted_by_confidence():
+def test_analyze_returns_at_most_one_side_bet_and_one_total_sorted_by_confidence():
     picks = analyze_nfl_game(_game(FULL_MARKET), _rating(32, 14), _rating(14, 32), league_avg=LEAGUE_AVG)
-    assert 1 <= len(picks) <= 3
+    assert 1 <= len(picks) <= 2
     confs = [p["confidence"] for p in picks]
     assert confs == sorted(confs, reverse=True)
 
@@ -182,9 +189,10 @@ def test_spread_outcomes_half_point_line_has_no_push():
 
 
 def test_spread_outcomes_integer_line_has_push_mass():
+    # El 4 cede masa al 3 (número clave): queda por debajo de la Normal (~2.9 %)
     win, push, lose = spread_outcomes(margin=4, home_line=-4)
-    assert 0.02 < push < 0.05
-    assert win == pytest.approx(lose)
+    assert 0.015 < push < 0.03
+    assert win == pytest.approx(lose, abs=0.04)
     assert win + push + lose == pytest.approx(1.0)
 
 
@@ -196,9 +204,9 @@ def test_total_outcomes_integer_line_has_push_mass():
 
 def test_spread_pick_value_accounts_for_push_refund():
     market = {**FULL_MARKET, "home_spread": -3.0, "home_spread_odds": 2.10, "away_spread_odds": 1.75}
-    picks = analyze_nfl_game(_game(market), _rating(27, 20), _rating(20, 27), league_avg=LEAGUE_AVG)
+    picks = analyze_nfl_game(_game(market), _rating(24, 21), _rating(21, 24), league_avg=LEAGUE_AVG)
     spread = next(p for p in picks if p["market"] == "spread")
-    _, push, _ = spread_outcomes(margin=14 + 1.5, home_line=-3.0)
+    _, push, _ = spread_outcomes(margin=6 + 1.5, home_line=-3.0)
     expected = spread["our_prob"] * (1 - push) * 2.10 + push - 1
     assert spread["push_prob"] == pytest.approx(push, abs=0.001)
     assert spread["value"] == pytest.approx(expected, abs=0.002)
@@ -206,7 +214,7 @@ def test_spread_pick_value_accounts_for_push_refund():
 
 def test_pick_em_line_is_shown_as_pk():
     market = {**FULL_MARKET, "home_spread": 0.0, "home_spread_odds": 2.20, "away_spread_odds": 1.70}
-    picks = analyze_nfl_game(_game(market), _rating(27, 20), _rating(20, 27), league_avg=LEAGUE_AVG)
+    picks = analyze_nfl_game(_game(market), _rating(23, 22), _rating(22, 23), league_avg=LEAGUE_AVG)
     spread = next(p for p in picks if p["market"] == "spread")
     assert spread["type"] == "Hándicap Kansas City Chiefs PK"
 
@@ -228,10 +236,11 @@ def test_data_quality_medium_when_ratings_come_from_previous_season():
 
 def test_confidence_pick_with_negative_value_is_rejected():
     # Mercado: favorito −250 (70 % sin vig); modelo: equipos parejos.
-    # La mezcla da ~63 % de confianza pero EV ≈ −12 %: no debe salir (review #1).
+    # La mezcla da ~63 % al favorito pero EV ≈ −12 %: el favorito no debe salir (review #1).
     market = {"home_ml": american_to_decimal("-250"), "away_ml": american_to_decimal("+210")}
     even = _rating(LEAGUE_AVG, LEAGUE_AVG)
-    assert analyze_nfl_game(_game(market), even, even, league_avg=LEAGUE_AVG) == []
+    picks = analyze_nfl_game(_game(market), even, even, league_avg=LEAGUE_AVG)
+    assert all(p["side"] != "Kansas City Chiefs" and p["value"] >= 0 for p in picks)
 
 
 def test_every_pick_has_real_odds_and_non_negative_value():
@@ -260,10 +269,18 @@ def test_spread_push_on_key_number_seven_is_above_normal():
     assert push_seven > 1.5 * push_eight
 
 
-def test_key_number_push_keeps_cover_ratio_and_sums_to_one():
+def test_key_number_distribution_sums_to_one_and_stays_near_even():
     win, push, lose = spread_outcomes(margin=5, home_line=-3)
     assert win + push + lose == pytest.approx(1.0)
-    assert cover_prob(margin=3, home_line=-3) == pytest.approx(0.5)
+    assert cover_prob(margin=3, home_line=-3) == pytest.approx(0.5, abs=0.01)
+
+
+def test_key_numbers_do_not_shift_projected_margin():
+    # La masa extra sale de los vecinos: la media del margen no se corre hacia 0
+    pmf = _margin_pmf(8.0)
+    assert sum(pmf.values()) == pytest.approx(1.0)
+    assert sum(k * mass for k, mass in pmf.items()) == pytest.approx(8.0, abs=0.1)
+    assert min(pmf.values()) >= 0
 
 
 def test_total_push_ignores_spread_key_numbers():
@@ -285,7 +302,8 @@ def test_provider_only_market_gives_no_picks():
 
 
 def test_moneyline_and_spread_on_same_team_keep_only_best_value():
-    picks = analyze_nfl_game(_game(FULL_MARKET), _rating(32, 14), _rating(14, 32), league_avg=LEAGUE_AVG)
+    # Margen proyectado +13.5: ML a 1.40 (EV ~5 %) y −6.5 a 1.91 (EV ~11 %) califican ambos
+    picks = analyze_nfl_game(_game(FULL_MARKET), _rating(25, 19), _rating(19, 25), league_avg=LEAGUE_AVG)
     kc = [p for p in picks if p["market"] in ("moneyline", "spread") and "Kansas City" in p["type"]]
     assert len(kc) == 1
     assert kc[0]["market"] == "spread"  # −6.5 a 1.91 tiene más value que ML a 1.40
@@ -297,7 +315,8 @@ def test_team_rating_weights_previous_season_less():
     w = NFL_PREV_SEASON_WEIGHT
     assert rating["pf"] == pytest.approx((30 + w * 40 + 3 * LEAGUE_AVG) / (1 + w * 4 + 3))
     assert rating["pa"] == pytest.approx((10 + w * 120 + 3 * LEAGUE_AVG) / (1 + w * 4 + 3))
-    assert rating["games"] == 5 and rating["current"] is False
+    assert rating["games"] == 1 and rating["previous_games"] == 4
+    assert rating["current"] is False
 
 
 # ── Code review: PK sin empates, lados opuestos ───────────────────
@@ -313,10 +332,11 @@ def _side_pick(market, side, value):
     return {"market": market, "side": side, "value": value, "confidence": 60}
 
 
-def test_drop_correlated_keeps_opposite_sides():
+def test_drop_correlated_keeps_one_side_bet_even_on_opposite_teams():
+    # ML de un equipo + spread del rival es una cobertura (apuesta a un middle), no dos picks
     picks = [_side_pick("moneyline", "Kansas City Chiefs", 0.05),
              _side_pick("spread", "Las Vegas Raiders", 0.06)]
-    assert _drop_correlated(picks) == picks
+    assert _drop_correlated(picks) == [picks[1]]
 
 
 def test_drop_correlated_never_touches_totals():
@@ -324,3 +344,98 @@ def test_drop_correlated_never_touches_totals():
              _side_pick("spread", "Kansas City Chiefs", 0.08),
              _side_pick("total", "Over", 0.01)]
     assert [p["market"] for p in _drop_correlated(picks)] == ["spread", "total"]
+
+
+# ── Review nfl_model 2: lado por EV, números clave .5, peso por calidad ─
+
+def test_moneyline_picks_underdog_when_value_is_on_underdog():
+    # Mercado: local −200 / visitante +170; el modelo ve el juego casi parejo.
+    # La mezcla aún da > 50 % al local, pero el EV positivo está en el visitante.
+    market = {"home_ml": 1.50, "away_ml": 2.70}
+    even = _rating(LEAGUE_AVG, LEAGUE_AVG)
+    picks = analyze_nfl_game(_game(market), even, even, league_avg=LEAGUE_AVG)
+    ml = next(p for p in picks if p["market"] == "moneyline")
+    assert ml["side"] == "Las Vegas Raiders"
+    assert ml["est_odds"] == 2.70
+    assert ml["value"] >= 0.04
+
+
+def test_spread_picks_side_with_better_ev_under_skewed_juice():
+    # Juice desigual: el local tiene > 50 % mezclado pero cuota 1.67 → EV negativo
+    market = {"home_spread": -3.5, "home_spread_odds": 1.67, "away_spread_odds": 2.25}
+    even = _rating(LEAGUE_AVG, LEAGUE_AVG)
+    picks = analyze_nfl_game(_game(market), even, even, league_avg=LEAGUE_AVG)
+    spread = next(p for p in picks if p["market"] == "spread")
+    assert spread["side"] == "Las Vegas Raiders"
+    assert spread["type"] == "Hándicap Las Vegas Raiders +3.5"
+    assert spread["est_odds"] == 2.25
+
+
+def test_half_point_line_crossing_three_captures_key_number_mass():
+    # −2.5 vs −3.5 difiere justo en "margen = 3" (~7.5 % por lado en la NFL; la Normal da ~3 %)
+    gap = cover_prob(margin=3, home_line=-2.5) - cover_prob(margin=3, home_line=-3.5)
+    assert gap > 0.06
+
+
+def test_half_point_line_crossing_non_key_number_stays_small():
+    gap = cover_prob(margin=5, home_line=-4.5) - cover_prob(margin=5, home_line=-5.5)
+    assert gap < 0.03
+
+
+def test_model_weight_is_lower_with_medium_data_quality():
+    # Proyección 50 vs línea 41.5 con cuotas parejas: el modelo se aleja del 50 % del mercado
+    market = {"total": 41.5, "over_odds": 1.91, "under_odds": 1.91}
+    current = analyze_nfl_game(_game(market), _rating(23.5, 23.5), _rating(23.5, 23.5), league_avg=LEAGUE_AVG)
+    stale = analyze_nfl_game(_game(market), _rating(23.5, 23.5, current=False), _rating(23.5, 23.5),
+                             league_avg=LEAGUE_AVG)
+    model_p = over_prob(total=50, line=41.5)
+    assert current[0]["our_prob"] == pytest.approx(blend(model_p, 0.5, NFL_MODEL_WEIGHT), abs=0.001)
+    assert stale[0]["our_prob"] == pytest.approx(blend(model_p, 0.5, NFL_MODEL_WEIGHT_MEDIUM_DQ),
+                                                 abs=0.001)
+
+
+# ── Longshots y techo de edge (code review HIGH) ──────────────────
+# El error del modelo se multiplica por la cuota: con ratings parejos frente a un
+# mercado muy desigual, el underdog largo salía con EV de +50 % o más.
+
+@pytest.mark.parametrize("dog_odds, fav_odds", [(5.0, 1.22), (8.0, 1.11)])
+def test_long_underdog_is_never_picked(dog_odds, fav_odds):
+    market = {"home_ml": fav_odds, "away_ml": dog_odds}
+    even = _rating(LEAGUE_AVG, LEAGUE_AVG)
+    assert analyze_nfl_game(_game(market), even, even, league_avg=LEAGUE_AVG) == []
+
+
+def test_underdog_within_max_odds_and_moderate_edge_is_picked():
+    market = {"home_ml": 1.40, "away_ml": 3.10}
+    even = _rating(LEAGUE_AVG, LEAGUE_AVG)
+    ml = analyze_nfl_game(_game(market), even, even, league_avg=LEAGUE_AVG)[0]
+    assert ml["side"] == "Las Vegas Raiders"
+    assert ml["est_odds"] <= NFL_MAX_ODDS
+    assert 0.04 <= ml["value"] <= NFL_MAX_PICK_VALUE
+
+
+def test_suspicious_edge_is_rejected_even_at_short_odds():
+    # Proyección 56 vs línea 41.5: el modelo ve un Over "seguro" a 1.91 (EV > 20 %).
+    # Un desacuerdo así con el mercado NFL indica información que el modelo no tiene.
+    market = {"total": 41.5, "over_odds": 1.91, "under_odds": 1.91}
+    high_scoring = _rating(26.5, 26.5)
+    assert analyze_nfl_game(_game(market), high_scoring, high_scoring, league_avg=LEAGUE_AVG) == []
+
+
+def test_underdog_beyond_max_odds_is_rejected_even_with_moderate_edge(monkeypatch):
+    # +300 con EV ~12 %: dentro del techo de edge, solo lo frena NFL_MAX_ODDS
+    market = {"home_ml": 1.25, "away_ml": 4.00}
+    args = (_game(market), _rating(23, 21), _rating(21, 23))
+    assert analyze_nfl_game(*args, league_avg=LEAGUE_AVG) == []
+
+    monkeypatch.setattr(nfl_model, "NFL_MAX_ODDS", 99.0)
+    ml = analyze_nfl_game(*args, league_avg=LEAGUE_AVG)[0]
+    assert ml["side"] == "Las Vegas Raiders"
+    assert 0.04 <= ml["value"] <= NFL_MAX_PICK_VALUE
+
+
+def test_underdog_at_exactly_max_odds_is_allowed():
+    market = {"home_ml": 1.32, "away_ml": NFL_MAX_ODDS}
+    picks = analyze_nfl_game(_game(market), _rating(22.5, 21.5), _rating(21.5, 22.5),
+                             league_avg=LEAGUE_AVG)
+    assert [(p["side"], p["est_odds"]) for p in picks] == [("Las Vegas Raiders", NFL_MAX_ODDS)]

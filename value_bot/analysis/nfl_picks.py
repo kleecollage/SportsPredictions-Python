@@ -5,7 +5,7 @@ from value_bot.analysis.nfl_model import SIDE_MARKETS, analyze_nfl_game, team_ra
 from value_bot.config import MAX_PICKS_SPORT, MIN_CONFIDENCE, VALUE_THRESHOLD
 from value_bot.sports.nfl import get_league_average, get_nfl_games, get_team_scores
 
-from value_bot.db import already_sent_for_event, already_sent_side_bet
+from value_bot.db import already_sent_for_event
 
 log = logging.getLogger(__name__)
 
@@ -24,13 +24,12 @@ def _rating(team_id: str | None, league_avg: float) -> dict:
 def _already_sent(event_id: str | None, pick: dict) -> bool:
     """
     Un pick por partido y mercado aunque el juego aparezca en varias corridas, y
-    sin repetir el mismo equipo en moneyline y spread (son casi la misma apuesta).
+    una sola apuesta de lado (moneyline o spread, de cualquier equipo) por partido.
     """
     if not event_id:
         return False
-    if already_sent_for_event(event_id, pick["market"]):
-        return True
-    return pick["market"] in SIDE_MARKETS and already_sent_side_bet(event_id, pick["side"])
+    markets = SIDE_MARKETS if pick["market"] in SIDE_MARKETS else (pick["market"],)
+    return any(already_sent_for_event(event_id, market) for market in markets)
 
 
 def get_nfl_picks() -> list[dict]:

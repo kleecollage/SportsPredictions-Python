@@ -5,11 +5,19 @@ Modelo de probabilidades NFL.
    media de la liga con NFL_PRIOR_GAMES juegos "fantasma" (con 2-3 juegos
    jugados un 45-7 no debe dominar la proyección).
 2. Proyección aditiva: puntos = media + ataque propio + defensa rival ± HFA/2.
-3. Margen y total ~ Normal(proyección, SD histórica NFL) → P(ganar),
-   P(cubrir spread), P(Over).
+3. Margen ~ Normal discretizada con masa extra en números clave (3, 7, 10, 14)
+   → P(cubrir spread); total ~ Normal → P(Over); P(ganar) con la Normal.
 4. La probabilidad final mezcla modelo con la probabilidad sin vig del mercado
    (DraftKings vía ESPN). El mercado NFL es muy eficiente, así que el modelo
-   solo pesa NFL_MODEL_WEIGHT; sin cuota real no se genera pick.
+   solo pesa NFL_MODEL_WEIGHT (menos con datos flojos); sin cuota real no hay pick.
+5. En cada mercado se apuesta el lado de mayor EV (puede ser el underdog) y por
+   partido sale a lo sumo una apuesta de lado (moneyline o spread) más el total.
+   Underdogs más largos que NFL_MAX_ODDS y EV > NFL_MAX_PICK_VALUE se descartan:
+   el error del modelo se multiplica por la cuota y un desacuerdo grande con el
+   mercado suele ser información que el modelo no tiene (QB, lesiones).
+
+Limitación conocida: los ratings no se ajustan por la fuerza del rival (un 3-0
+contra rivales débiles infla el ataque); el peso del mercado lo amortigua.
 
 Funciones puras: no hacen requests ni leen la BD.
 """
@@ -21,18 +29,24 @@ NFL_MARGIN_SD     = 13.5   # desviación estándar histórica del margen final
 NFL_TOTAL_SD      = 13.0   # desviación estándar histórica del total de puntos
 NFL_PRIOR_GAMES   = 3      # juegos de media de liga añadidos al rating
 NFL_MODEL_WEIGHT  = 0.4    # peso del modelo frente al mercado sin vig
+NFL_MODEL_WEIGHT_MEDIUM_DQ = 0.25  # con muestra corta o de la temporada anterior
 NFL_MAX_PROB      = 0.85   # techo: en la NFL nada es más seguro que esto
 NFL_MIN_ODDS      = 1.30   # cuotas menores no dejan margen apostable
-NFL_MAX_PICKS     = 3
+NFL_MAX_ODDS      = 3.50   # +250: en underdogs más largos el error del modelo se multiplica por la cuota
 NFL_HIGH_DQ_GAMES = 4      # juegos mínimos por equipo para data_quality "high"
 NFL_PREV_SEASON_WEIGHT = 0.5  # peso de cada juego de la temporada anterior
 NFL_MIN_PICK_VALUE     = 0.0  # ningún pick sale con EV negativo, aunque tenga confianza alta
+NFL_MAX_PICK_VALUE     = 0.15  # EV mayor en un mercado tan eficiente = info que el modelo no tiene
 
-# Masa de "margen exacto = k" frente a la Normal(sd 13.5). Aprox. histórica NFL:
-# ~15 % de los juegos se deciden por 3, ~9 % por 7, ~5.5 % por 10, ~4.5 % por 14,
-# contra ~5.8 / 5.2 / 4.5 / 3.5 % que da la Normal cerca de margen 0. Los empates
-# finales (tras tiempo extra) son ~0.3 % contra ~3 % de la Normal.
+# Multiplicador de la masa de |margen| = k en la Normal(sd 13.5) discretizada. Aprox.
+# histórica NFL: ~15 % de los juegos se deciden por 3, ~9 % por 7, ~5.5 % por 10,
+# ~4.5 % por 14, contra ~5.8 / 5.2 / 4.5 / 3.5 % que da la Normal cerca de margen 0.
+# Los empates finales (tras tiempo extra) son ~0.3 % contra ~3 % de la Normal.
+# La masa extra sale de los márgenes vecinos (NFL_KEY_NEIGHBOURS), así la media y
+# las colas de la Normal no se mueven.
 NFL_KEY_MARGIN_WEIGHTS = {0: 0.1, 3: 2.6, 7: 1.75, 10: 1.2, 14: 1.3}
+NFL_KEY_NEIGHBOURS = (-2, -1, 1, 2)  # ningún vecino es otro número clave
+NFL_PMF_SPAN_SD = 6  # la distribución del margen se corta a ±6 SD
 SIDE_MARKETS = ("moneyline", "spread")  # apuestas a un equipo, correlacionadas entre sí
 
 
@@ -72,11 +86,12 @@ def team_rating(scores: list[tuple[float, float]], league_avg: float,
     """
     scores = [(pts_a_favor, pts_en_contra), ...] de la temporada actual;
     previous = los de la anterior, que pesan previous_weight cada uno.
-    → {pf, pa, games, current}. current=False si la muestra incluye la anterior.
+    → {pf, pa, games, previous_games, current}: games cuenta solo la temporada
+    actual. current=False si la muestra incluye la anterior.
     """
-    games = len(scores) + len(previous)
-    if games == 0:
-        return {"pf": league_avg, "pa": league_avg, "games": 0, "current": current_season}
+    counts = {"games": len(scores), "previous_games": len(previous), "current": current_season}
+    if not scores and not previous:
+        return {"pf": league_avg, "pa": league_avg, **counts}
     weight = len(scores) + previous_weight * len(previous) + prior_games
     prior = league_avg * prior_games
 
@@ -84,7 +99,7 @@ def team_rating(scores: list[tuple[float, float]], league_avg: float,
         own = sum(s[i] for s in scores) + previous_weight * sum(s[i] for s in previous)
         return (own + prior) / weight
 
-    return {"pf": weighted(0), "pa": weighted(1), "games": games, "current": current_season}
+    return {"pf": weighted(0), "pa": weighted(1), **counts}
 
 
 def project_game(home: dict, away: dict, league_avg: float,
@@ -106,32 +121,62 @@ def win_prob(margin: float, sd: float = NFL_MARGIN_SD) -> float:
     return _normal_cdf(margin / sd)
 
 
-def _outcomes(expected: float, threshold: float, sd: float,
-              key_weights: dict[int, float] | None = None) -> tuple[float, float, float]:
+def _outcomes(expected: float, threshold: float, sd: float) -> tuple[float, float, float]:
     """
     (P(x > threshold), P(x == threshold), P(x < threshold)) para un resultado
     entero x ~ Normal(expected, sd). Líneas .5 no tienen push; las enteras
-    usan corrección de continuidad (±0.5) para la masa del empate. Con
-    key_weights, el push en números clave se escala y ganar/perder conservan
-    su proporción (P(cubrir | no push) no cambia).
+    usan corrección de continuidad (±0.5) para la masa del empate.
     """
     if not float(threshold).is_integer():
         below = _normal_cdf((threshold - expected) / sd)
         return 1 - below, 0.0, below
     upper = _normal_cdf((threshold + 0.5 - expected) / sd)
     lower = _normal_cdf((threshold - 0.5 - expected) / sd)
-    win, push, lose = 1 - upper, upper - lower, lower
-    key_weight = (key_weights or {}).get(abs(int(threshold)), 1.0)
-    if key_weight == 1.0:
-        return win, push, lose
-    push = min(push * key_weight, 0.5)
-    return (1 - push) * win / (win + lose), push, (1 - push) * lose / (win + lose)
+    return 1 - upper, upper - lower, lower
+
+
+def _reweight_key(pmf: dict[int, float], key: int, weight: float) -> dict[int, float]:
+    """Nueva pmf con la masa de `key` × weight; la diferencia sale de sus vecinos."""
+    neighbours = {key + d for d in NFL_KEY_NEIGHBOURS} & pmf.keys()
+    pool = sum(pmf[k] for k in neighbours)
+    if key not in pmf or pool <= 0:
+        return pmf
+    extra = (weight - 1) * pmf[key]
+
+    def adjusted(k: int, mass: float) -> float:
+        if k == key:
+            return mass + extra
+        return mass - extra * mass / pool if k in neighbours else mass
+
+    return {k: adjusted(k, mass) for k, mass in pmf.items()}
+
+
+def _margin_pmf(expected: float, sd: float = NFL_MARGIN_SD,
+                key_weights: dict[int, float] = NFL_KEY_MARGIN_WEIGHTS) -> dict[int, float]:
+    """P(margen = k) para k entero: Normal discretizada con números clave (±k), suma 1."""
+    span = math.ceil(NFL_PMF_SPAN_SD * sd)
+    pmf = {
+        k: _normal_cdf((k + 0.5 - expected) / sd) - _normal_cdf((k - 0.5 - expected) / sd)
+        for k in range(math.floor(expected) - span, math.ceil(expected) + span + 1)
+    }
+    for key, weight in key_weights.items():
+        for signed_key in {key, -key}:
+            pmf = _reweight_key(pmf, signed_key, weight)
+    return pmf
 
 
 def spread_outcomes(margin: float, home_line: float,
                     sd: float = NFL_MARGIN_SD) -> tuple[float, float, float]:
-    """(local cubre, push, local no cubre). home_line negativa = local favorito."""
-    return _outcomes(margin, -home_line, sd, NFL_KEY_MARGIN_WEIGHTS)
+    """
+    (local cubre, push, local no cubre). home_line negativa = local favorito.
+    Usa la distribución con números clave, así que también líneas .5 que cruzan
+    el 3 o el 7 (−2.5 vs −3.5) reflejan la masa histórica de esos márgenes.
+    """
+    threshold = -home_line
+    pmf = _margin_pmf(margin, sd)
+    win = sum(mass for k, mass in pmf.items() if k > threshold)
+    push = sum(mass for k, mass in pmf.items() if k == threshold)
+    return win, push, 1 - win - push
 
 
 def total_outcomes(total: float, line: float,
@@ -154,6 +199,11 @@ def over_prob(total: float, line: float, sd: float = NFL_TOTAL_SD) -> float:
 
 def blend(model_p: float, market_p: float, model_weight: float = NFL_MODEL_WEIGHT) -> float:
     return model_weight * model_p + (1 - model_weight) * market_p
+
+
+def _model_weight(data_quality: str) -> float:
+    """Con datos flojos el modelo se acerca menos al mercado."""
+    return NFL_MODEL_WEIGHT if data_quality == "high" else NFL_MODEL_WEIGHT_MEDIUM_DQ
 
 
 # ── Picks ─────────────────────────────────────────────────────────
@@ -198,17 +248,23 @@ def _build_pick(market_name: str, side: str, pick_type: str, prob: float, odds: 
     }
 
 
+def _best_value(*picks: dict) -> dict:
+    """De los dos lados de un mercado, el de mayor EV (no el más probable)."""
+    return max(picks, key=lambda p: p["value"])
+
+
 def _moneyline_pick(game, margin, market, proj_txt, dq):
     home_odds, away_odds = market.get("home_ml"), market.get("away_ml")
     if not (home_odds and away_odds):
         return None
-    p_home = blend(win_prob(margin), no_vig_pair(home_odds, away_odds)[0])
-    is_home = p_home >= 0.5
-    side = game["home"] if is_home else game["away"]
-    prob = p_home if is_home else 1 - p_home
-    return _build_pick("moneyline", side, f"Victoria {side}", prob,
-                       home_odds if is_home else away_odds,
-                       f"{proj_txt}. {side} gana en {_pct(prob)} de escenarios.", dq)
+    p_home = blend(win_prob(margin), no_vig_pair(home_odds, away_odds)[0], _model_weight(dq))
+
+    def side_pick(side: str, prob: float, odds: float) -> dict:
+        return _build_pick("moneyline", side, f"Victoria {side}", prob, odds,
+                           f"{proj_txt}. {side} gana en {_pct(prob)} de escenarios.", dq)
+
+    return _best_value(side_pick(game["home"], p_home, home_odds),
+                       side_pick(game["away"], 1 - p_home, away_odds))
 
 
 def _spread_pick(game, margin, market, proj_txt, dq):
@@ -216,16 +272,17 @@ def _spread_pick(game, margin, market, proj_txt, dq):
     h_odds, a_odds = market.get("home_spread_odds"), market.get("away_spread_odds")
     if line is None or not (h_odds and a_odds):
         return None
-    p_home = blend(cover_prob(margin, line), no_vig_pair(h_odds, a_odds)[0])
-    is_home = p_home >= 0.5
-    side = game["home"] if is_home else game["away"]
-    side_line = line if is_home else -line
-    prob = p_home if is_home else 1 - p_home
-    _, push, _ = spread_outcomes(margin, line)
-    return _build_pick("spread", side, f"Hándicap {side} {_fmt_line(side_line)}", prob,
-                       h_odds if is_home else a_odds,
-                       f"{proj_txt}. Mercado {game['home']} {_fmt_line(line)} "
-                       f"→ {side} cubre en {_pct(prob)}{_push_txt(push)}.", dq, push)
+    home_cover, push, home_miss = spread_outcomes(margin, line)
+    model_p = home_cover / (home_cover + home_miss)
+    p_home = blend(model_p, no_vig_pair(h_odds, a_odds)[0], _model_weight(dq))
+
+    def side_pick(side: str, side_line: float, prob: float, odds: float) -> dict:
+        return _build_pick("spread", side, f"Hándicap {side} {_fmt_line(side_line)}", prob, odds,
+                           f"{proj_txt}. Mercado {game['home']} {_fmt_line(line)} "
+                           f"→ {side} cubre en {_pct(prob)}{_push_txt(push)}.", dq, push)
+
+    return _best_value(side_pick(game["home"], line, p_home, h_odds),
+                       side_pick(game["away"], -line, 1 - p_home, a_odds))
 
 
 def _total_pick(game, total, market, proj_txt, dq):
@@ -233,34 +290,39 @@ def _total_pick(game, total, market, proj_txt, dq):
     o_odds, u_odds = market.get("over_odds"), market.get("under_odds")
     if line is None or not (o_odds and u_odds):
         return None
-    p_over = blend(over_prob(total, line), no_vig_pair(o_odds, u_odds)[0])
-    is_over = p_over >= 0.5
-    prob = p_over if is_over else 1 - p_over
-    label = "Over" if is_over else "Under"
+    p_over = blend(over_prob(total, line), no_vig_pair(o_odds, u_odds)[0], _model_weight(dq))
     _, push, _ = total_outcomes(total, line)
-    return _build_pick("total", label, f"{label} {line:.1f} Puntos", prob,
-                       o_odds if is_over else u_odds,
-                       f"{proj_txt}. Total proyectado {total:.1f} vs línea {line:.1f}"
-                       f"{_push_txt(push)}.", dq, push)
+
+    def side_pick(label: str, prob: float, odds: float) -> dict:
+        return _build_pick("total", label, f"{label} {line:.1f} Puntos", prob, odds,
+                           f"{proj_txt}. Total proyectado {total:.1f} vs línea {line:.1f}"
+                           f"{_push_txt(push)}.", dq, push)
+
+    return _best_value(side_pick("Over", p_over, o_odds), side_pick("Under", 1 - p_over, u_odds))
 
 
 def _qualifies(pick: dict, min_conf: int, value_threshold: float) -> bool:
-    """Cuota apostable y EV ≥ 0; luego confianza alta o edge suficiente."""
-    if pick["est_odds"] <= NFL_MIN_ODDS or pick["value"] < NFL_MIN_PICK_VALUE:
+    """
+    Cuota entre NFL_MIN_ODDS y NFL_MAX_ODDS y EV entre NFL_MIN_PICK_VALUE y
+    NFL_MAX_PICK_VALUE (un edge mayor es sospechoso); luego confianza alta o edge suficiente.
+    """
+    if not NFL_MIN_ODDS < pick["est_odds"] <= NFL_MAX_ODDS:
+        return False
+    if not NFL_MIN_PICK_VALUE <= pick["value"] <= NFL_MAX_PICK_VALUE:
         return False
     return pick["confidence"] >= min_conf or pick["value"] >= value_threshold
 
 
 def _drop_correlated(picks: list[dict]) -> list[dict]:
-    """Moneyline y spread del mismo equipo son casi la misma apuesta: queda el de más value."""
+    """
+    Una sola apuesta de lado por partido, la de más value: moneyline y spread del
+    mismo equipo son casi la misma apuesta, y de equipos opuestos son una cobertura.
+    """
     side_bets = [p for p in picks if p["market"] in SIDE_MARKETS]
-    by_side: dict[str, dict] = {}
-    for pick in side_bets:
-        best = by_side.get(pick["side"])
-        if best is None or pick["value"] > best["value"]:
-            by_side[pick["side"]] = pick
-    keep = {id(p) for p in by_side.values()}
-    return [p for p in picks if p["market"] not in SIDE_MARKETS or id(p) in keep]
+    if not side_bets:
+        return picks
+    best = _best_value(*side_bets)
+    return [p for p in picks if p["market"] not in SIDE_MARKETS or p is best]
 
 
 def _data_quality(home_rating: dict, away_rating: dict) -> str:
@@ -273,8 +335,8 @@ def _data_quality(home_rating: dict, away_rating: dict) -> str:
 def analyze_nfl_game(game: dict, home_rating: dict, away_rating: dict, league_avg: float,
                      min_conf: int = 62, value_threshold: float = 0.04) -> list[dict]:
     """
-    Picks de un partido, solo de mercados con cuota real en game["lines"].
-    Cada pick lleva "market" = moneyline|spread|total. Entra si su EV ≥ 0 y
+    Picks de un partido, solo de mercados con cuota real en game["lines"]: a lo
+    sumo una apuesta de lado (moneyline|spread) y un total. Entra si su EV ≥ 0 y
     supera min_conf o tiene edge ≥ value_threshold. Sede neutral = sin HFA.
     """
     neutral = bool(game.get("neutral_site"))
@@ -291,5 +353,4 @@ def analyze_nfl_game(game: dict, home_rating: dict, away_rating: dict, league_av
         _total_pick(game, total, market, proj_txt, dq),
     ]
     picks = _drop_correlated([p for p in candidates if p and _qualifies(p, min_conf, value_threshold)])
-    picks.sort(key=lambda p: p["confidence"], reverse=True)
-    return picks[:NFL_MAX_PICKS]
+    return sorted(picks, key=lambda p: p["confidence"], reverse=True)

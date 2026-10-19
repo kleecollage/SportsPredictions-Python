@@ -54,7 +54,6 @@ def wired(monkeypatch):
                                                previous=((30.0, 10.0),) * 17 if tid == "6" else ()))
     monkeypatch.setattr(nfl_picks, "analyze_nfl_game", fake_analyze)
     monkeypatch.setattr(nfl_picks, "already_sent_for_event", lambda *_: False)
-    monkeypatch.setattr(nfl_picks, "already_sent_side_bet", lambda *_: False)
     return calls
 
 
@@ -68,7 +67,8 @@ def test_marks_ratings_from_previous_season(wired):
     gb = next(c for c in wired if c["home"] == "Green Bay Packers")
     assert gb["home_rating"]["current"] is True
     assert gb["away_rating"]["current"] is False
-    assert gb["away_rating"]["games"] == 23  # temporada anterior incluida, con menos peso
+    assert gb["away_rating"]["games"] == 6  # solo temporada actual
+    assert gb["away_rating"]["previous_games"] == 17  # la anterior va aparte, con menos peso
 
 
 def test_tags_picks_with_sport_and_keeps_game_lines(wired):
@@ -111,15 +111,19 @@ def test_message_renders_nfl_section(wired):
     assert "Chiefs: 5-1 | Raiders: 1-5" in msg
 
 
-def test_skips_side_bet_when_same_team_was_already_sent_in_other_market(wired, monkeypatch):
-    # Corrida previa mandó "Hándicap Kansas City Chiefs": su ML es casi la misma apuesta
-    monkeypatch.setattr(nfl_picks, "already_sent_side_bet",
-                        lambda event_id, side: (event_id, side) == ("evt-12", "Kansas City Chiefs"))
+def test_skips_side_bet_when_any_side_bet_was_already_sent_for_that_event(wired, monkeypatch):
+    # Corrida previa mandó un spread (de cualquier equipo): otro ML/spread sería la misma
+    # apuesta o una cobertura
+    sent = {("evt-12", "spread")}
+    monkeypatch.setattr(nfl_picks, "already_sent_for_event",
+                        lambda event_id, market: (event_id, market) in sent)
     types = [p["type"] for p in nfl_picks.get_nfl_picks()]
     assert "Victoria Kansas City Chiefs" not in types
     assert "Victoria Green Bay Packers" in types
 
 
-def test_totals_are_not_checked_as_side_bets(wired, monkeypatch):
-    monkeypatch.setattr(nfl_picks, "already_sent_side_bet", lambda event_id, side: side == "Under")
+def test_totals_are_not_blocked_by_side_bets(wired, monkeypatch):
+    sent = {("evt-9", "moneyline"), ("evt-9", "spread")}
+    monkeypatch.setattr(nfl_picks, "already_sent_for_event",
+                        lambda event_id, market: (event_id, market) in sent)
     assert "Under 53.5 Puntos" in [p["type"] for p in nfl_picks.get_nfl_picks()]

@@ -170,27 +170,6 @@ def already_sent_for_event(event_id: str, market: str) -> bool:
     return row is not None
 
 
-def already_sent_side_bet(event_id: str, side: str) -> bool:
-    """
-    True si ya se envió un moneyline o spread NFL del mismo equipo para ese partido:
-    son casi la misma apuesta, aunque el dedup por mercado deje pasar la otra.
-    Filas anteriores a `side` en el payload se reconocen por pick_type.
-    """
-    with sqlite3.connect(DB_PATH) as conn:
-        row = conn.execute("""
-            SELECT 1 FROM picks
-            WHERE sport = 'nfl'
-              AND json_extract(payload, '$.event_id') = :event_id
-              AND json_extract(payload, '$.market') IN ('moneyline', 'spread')
-              AND (json_extract(payload, '$.side') = :side
-                   OR pick_type = 'Victoria ' || :side
-                   OR substr(pick_type, 1, length('Hándicap ' || :side || ' '))
-                      = 'Hándicap ' || :side || ' ')
-            LIMIT 1
-        """, {"event_id": event_id, "side": side}).fetchone()
-    return row is not None
-
-
 # ── Resultados ────────────────────────────────────────────────────
 
 def save_result(pick_id: int, outcome: str, actual_score: str | None,
