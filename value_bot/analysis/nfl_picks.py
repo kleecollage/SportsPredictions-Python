@@ -1,7 +1,7 @@
 """Picks NFL: junta datos ESPN + modelo y filtra contra la BD."""
 import logging
 
-from value_bot.analysis.nfl_model import SIDE_MARKETS, analyze_nfl_game, team_rating
+from value_bot.analysis.nfl_model import SIDE_MARKETS, analyze_nfl_game, is_pickable_week, team_rating
 from value_bot.config import MAX_PICKS_SPORT, MIN_CONFIDENCE, VALUE_THRESHOLD
 from value_bot.sports.nfl import get_league_average, get_nfl_games, get_team_scores
 
@@ -33,9 +33,13 @@ def _already_sent(event_id: str | None, pick: dict) -> bool:
 
 
 def get_nfl_picks() -> list[dict]:
-    games = get_nfl_games()
+    scheduled = get_nfl_games()
+    games = [g for g in scheduled if is_pickable_week(g)]
+    if len(games) < len(scheduled):
+        log.info("NFL: %d juegos de semanas 1–2 sin picks (ratings con datos del año anterior)",
+                 len(scheduled) - len(games))
     if not games:
-        log.info("NFL picks: 0 (sin juegos programados)")
+        log.info("NFL picks: 0 (sin juegos elegibles)")
         return []
 
     avg = get_league_average()

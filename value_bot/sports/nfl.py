@@ -137,6 +137,8 @@ def parse_espn_nfl_event(event: dict, default_season_type: int | None = None) ->
     home_team, away_team = _obj(home, "team"), _obj(away, "team")
     return {
         "sport":       "nfl",
+        "season_type": season_type,
+        "week":        _obj(event, "week").get("number"),
         "event_id":    str(event["id"]) if event.get("id") else None,
         "date":        _et_date(kickoff),
         "kickoff":     kickoff,

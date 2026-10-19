@@ -127,3 +127,19 @@ def test_totals_are_not_blocked_by_side_bets(wired, monkeypatch):
     monkeypatch.setattr(nfl_picks, "already_sent_for_event",
                         lambda event_id, market: (event_id, market) in sent)
     assert "Under 53.5 Puntos" in [p["type"] for p in nfl_picks.get_nfl_picks()]
+
+
+def test_skips_games_in_first_regular_season_weeks(wired, monkeypatch):
+    week1 = {**_game("Kansas City Chiefs", "Las Vegas Raiders", "12", "13"), "week": 1, "season_type": 2}
+    week3 = {**_game("Green Bay Packers", "Dallas Cowboys", "9", "6"), "week": 3, "season_type": 2}
+    monkeypatch.setattr(nfl_picks, "get_nfl_games", lambda: [week1, week3])
+    nfl_picks.get_nfl_picks()
+    assert [c["home"] for c in wired] == ["Green Bay Packers"]
+
+
+def test_early_season_only_slate_does_not_fetch_stats(monkeypatch):
+    week2 = {**_game("Kansas City Chiefs", "Las Vegas Raiders", "12", "13"), "week": 2, "season_type": 2}
+    monkeypatch.setattr(nfl_picks, "get_nfl_games", lambda: [week2])
+    monkeypatch.setattr(nfl_picks, "get_league_average",
+                        lambda: pytest.fail("no debe pedir la media sin juegos elegibles"))
+    assert nfl_picks.get_nfl_picks() == []

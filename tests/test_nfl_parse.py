@@ -320,3 +320,13 @@ def test_get_league_average_includes_previous_season_sample(monkeypatch):
     monkeypatch.setattr(nfl, "get_team_scores",
                         lambda tid: TeamScores([(30.0, 10.0)], False, ((20.0, 20.0),) * 9))
     assert nfl.get_league_average() == pytest.approx(21.0)
+
+
+def test_parse_week_and_season_type():
+    game = parse_espn_nfl_event({**_event(), "week": {"number": 7}})
+    assert game["week"] == 7
+    assert game["season_type"] == 2
+
+
+def test_parse_without_week_leaves_it_unknown():
+    assert parse_espn_nfl_event(_event())["week"] is None

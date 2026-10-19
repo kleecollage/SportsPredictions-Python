@@ -2,6 +2,7 @@ import pytest
 
 from value_bot.analysis import nfl_model
 from value_bot.analysis.nfl_model import (
+    NFL_FIRST_PICK_WEEK,
     NFL_HFA,
     NFL_MAX_ODDS,
     NFL_MAX_PICK_VALUE,
@@ -20,6 +21,7 @@ from value_bot.analysis.nfl_model import (
     spread_outcomes,
     team_rating,
     total_outcomes,
+    is_pickable_week,
     win_prob,
 )
 
@@ -44,6 +46,17 @@ FULL_MARKET = {
     "home_spread": -6.5, "home_spread_odds": 1.91, "away_spread_odds": 1.91,
     "total": 44.5, "over_odds": 1.91, "under_odds": 1.91,
 }
+
+
+@pytest.fixture
+def legacy_weights(monkeypatch):
+    """
+    Peso del modelo previo al backtest 2026 (0.4 / 0.25). Los escenarios marcados se
+    armaron con él para que haya edge; prueban selección de lado, push, formato y
+    filtros, no el peso (que tiene sus propios tests).
+    """
+    monkeypatch.setattr(nfl_model, "NFL_MODEL_WEIGHT", 0.4)
+    monkeypatch.setattr(nfl_model, "NFL_MODEL_WEIGHT_MEDIUM_DQ", 0.25)
 
 
 # ── Conversión de cuotas ──────────────────────────────────────────
@@ -155,7 +168,8 @@ def test_analyze_even_matchup_without_value_returns_no_picks():
     assert picks == []
 
 
-def test_analyze_includes_value_pick_below_min_confidence():
+@pytest.mark.usefixtures("legacy_weights")
+def test_analyze_includes_value_pick_below_min_confidence(totals_enabled):
     # El modelo proyecta 50 pts y el mercado pone 44.5: el Over no llega a 62%
     # de confianza tras mezclar con el mercado, pero sí tiene edge positivo.
     market = {**FULL_MARKET, "total": 44.5, "over_odds": 2.05, "under_odds": 1.80}
@@ -202,6 +216,7 @@ def test_total_outcomes_integer_line_has_push_mass():
     assert over == pytest.approx(under)
 
 
+@pytest.mark.usefixtures("legacy_weights")
 def test_spread_pick_value_accounts_for_push_refund():
     market = {**FULL_MARKET, "home_spread": -3.0, "home_spread_odds": 2.10, "away_spread_odds": 1.75}
     picks = analyze_nfl_game(_game(market), _rating(24, 21), _rating(21, 24), league_avg=LEAGUE_AVG)
@@ -212,6 +227,7 @@ def test_spread_pick_value_accounts_for_push_refund():
     assert spread["value"] == pytest.approx(expected, abs=0.002)
 
 
+@pytest.mark.usefixtures("legacy_weights")
 def test_pick_em_line_is_shown_as_pk():
     market = {**FULL_MARKET, "home_spread": 0.0, "home_spread_odds": 2.20, "away_spread_odds": 1.70}
     picks = analyze_nfl_game(_game(market), _rating(23, 22), _rating(22, 23), league_avg=LEAGUE_AVG)
@@ -249,6 +265,7 @@ def test_every_pick_has_real_odds_and_non_negative_value():
     assert all(p["real_odds_source"] is True and p["value"] >= 0 for p in picks)
 
 
+@pytest.mark.usefixtures("legacy_weights")
 def test_neutral_site_removes_home_field_advantage():
     even = _rating(LEAGUE_AVG, LEAGUE_AVG)
     market = {**FULL_MARKET, "home_ml": 1.80, "away_ml": 2.05}
@@ -301,6 +318,7 @@ def test_provider_only_market_gives_no_picks():
     assert picks == []
 
 
+@pytest.mark.usefixtures("legacy_weights")
 def test_moneyline_and_spread_on_same_team_keep_only_best_value():
     # Margen proyectado +13.5: ML a 1.40 (EV ~5 %) y −6.5 a 1.91 (EV ~11 %) califican ambos
     picks = analyze_nfl_game(_game(FULL_MARKET), _rating(25, 19), _rating(19, 25), league_avg=LEAGUE_AVG)
@@ -348,6 +366,7 @@ def test_drop_correlated_never_touches_totals():
 
 # ── Review nfl_model 2: lado por EV, números clave .5, peso por calidad ─
 
+@pytest.mark.usefixtures("legacy_weights")
 def test_moneyline_picks_underdog_when_value_is_on_underdog():
     # Mercado: local −200 / visitante +170; el modelo ve el juego casi parejo.
     # La mezcla aún da > 50 % al local, pero el EV positivo está en el visitante.
@@ -360,6 +379,7 @@ def test_moneyline_picks_underdog_when_value_is_on_underdog():
     assert ml["value"] >= 0.04
 
 
+@pytest.mark.usefixtures("legacy_weights")
 def test_spread_picks_side_with_better_ev_under_skewed_juice():
     # Juice desigual: el local tiene > 50 % mezclado pero cuota 1.67 → EV negativo
     market = {"home_spread": -3.5, "home_spread_odds": 1.67, "away_spread_odds": 2.25}
@@ -382,15 +402,16 @@ def test_half_point_line_crossing_non_key_number_stays_small():
     assert gap < 0.03
 
 
-def test_model_weight_is_lower_with_medium_data_quality():
+@pytest.mark.usefixtures("legacy_weights")
+def test_model_weight_is_lower_with_medium_data_quality(totals_enabled):
     # Proyección 50 vs línea 41.5 con cuotas parejas: el modelo se aleja del 50 % del mercado
     market = {"total": 41.5, "over_odds": 1.91, "under_odds": 1.91}
     current = analyze_nfl_game(_game(market), _rating(23.5, 23.5), _rating(23.5, 23.5), league_avg=LEAGUE_AVG)
     stale = analyze_nfl_game(_game(market), _rating(23.5, 23.5, current=False), _rating(23.5, 23.5),
                              league_avg=LEAGUE_AVG)
     model_p = over_prob(total=50, line=41.5)
-    assert current[0]["our_prob"] == pytest.approx(blend(model_p, 0.5, NFL_MODEL_WEIGHT), abs=0.001)
-    assert stale[0]["our_prob"] == pytest.approx(blend(model_p, 0.5, NFL_MODEL_WEIGHT_MEDIUM_DQ),
+    assert current[0]["our_prob"] == pytest.approx(blend(model_p, 0.5, nfl_model.NFL_MODEL_WEIGHT), abs=0.001)
+    assert stale[0]["our_prob"] == pytest.approx(blend(model_p, 0.5, nfl_model.NFL_MODEL_WEIGHT_MEDIUM_DQ),
                                                  abs=0.001)
 
 
@@ -405,6 +426,7 @@ def test_long_underdog_is_never_picked(dog_odds, fav_odds):
     assert analyze_nfl_game(_game(market), even, even, league_avg=LEAGUE_AVG) == []
 
 
+@pytest.mark.usefixtures("legacy_weights")
 def test_underdog_within_max_odds_and_moderate_edge_is_picked():
     market = {"home_ml": 1.40, "away_ml": 3.10}
     even = _rating(LEAGUE_AVG, LEAGUE_AVG)
@@ -414,7 +436,8 @@ def test_underdog_within_max_odds_and_moderate_edge_is_picked():
     assert 0.04 <= ml["value"] <= NFL_MAX_PICK_VALUE
 
 
-def test_suspicious_edge_is_rejected_even_at_short_odds():
+@pytest.mark.usefixtures("legacy_weights")
+def test_suspicious_edge_is_rejected_even_at_short_odds(totals_enabled):
     # Proyección 56 vs línea 41.5: el modelo ve un Over "seguro" a 1.91 (EV > 20 %).
     # Un desacuerdo así con el mercado NFL indica información que el modelo no tiene.
     market = {"total": 41.5, "over_odds": 1.91, "under_odds": 1.91}
@@ -422,6 +445,7 @@ def test_suspicious_edge_is_rejected_even_at_short_odds():
     assert analyze_nfl_game(_game(market), high_scoring, high_scoring, league_avg=LEAGUE_AVG) == []
 
 
+@pytest.mark.usefixtures("legacy_weights")
 def test_underdog_beyond_max_odds_is_rejected_even_with_moderate_edge(monkeypatch):
     # +300 con EV ~12 %: dentro del techo de edge, solo lo frena NFL_MAX_ODDS
     market = {"home_ml": 1.25, "away_ml": 4.00}
@@ -434,8 +458,52 @@ def test_underdog_beyond_max_odds_is_rejected_even_with_moderate_edge(monkeypatc
     assert 0.04 <= ml["value"] <= NFL_MAX_PICK_VALUE
 
 
+@pytest.mark.usefixtures("legacy_weights")
 def test_underdog_at_exactly_max_odds_is_allowed():
     market = {"home_ml": 1.32, "away_ml": NFL_MAX_ODDS}
     picks = analyze_nfl_game(_game(market), _rating(22.5, 21.5), _rating(21.5, 22.5),
                              league_avg=LEAGUE_AVG)
     assert [(p["side"], p["est_odds"]) for p in picks] == [("Las Vegas Raiders", NFL_MAX_ODDS)]
+
+
+# ── Backtest temporada 2026 (91 juegos, cierre DraftKings) ────────
+# Totales: el lado del modelo acertó 34/91 (37 %) y su Brier fue peor que el mercado.
+# ML/spread: el peso del modelo que minimiza Brier fue 0.15, no 0.4.
+# Semanas 1–2 (ratings con datos de la temporada anterior): 3-8, ROI −52 %.
+
+@pytest.fixture
+def totals_enabled(monkeypatch):
+    monkeypatch.setattr(nfl_model, "NFL_TOTALS_ENABLED", True)
+
+
+def test_totals_are_not_picked_while_disabled(monkeypatch):
+    market = {"total": 41.5, "over_odds": 1.91, "under_odds": 1.91}
+    high_scoring = _rating(26, 26)
+    assert analyze_nfl_game(_game(market), high_scoring, high_scoring, league_avg=LEAGUE_AVG) == []
+
+    monkeypatch.setattr(nfl_model, "NFL_TOTALS_ENABLED", True)
+    picks = analyze_nfl_game(_game(market), high_scoring, high_scoring, league_avg=LEAGUE_AVG)
+    assert [p["market"] for p in picks] == ["total"]
+
+
+def test_model_weight_comes_from_backtest_optimum():
+    assert NFL_MODEL_WEIGHT == pytest.approx(0.15)
+    assert 0 < NFL_MODEL_WEIGHT_MEDIUM_DQ < NFL_MODEL_WEIGHT
+
+
+def test_moneyline_probability_leans_mostly_on_market():
+    # Modelo: local muy superior; mercado: parejo. La mezcla queda cerca del 50 %.
+    market = {"home_ml": 1.91, "away_ml": 1.91}
+    picks = analyze_nfl_game(_game(market), _rating(30, 16), _rating(16, 30), league_avg=LEAGUE_AVG)
+    ml = next(p for p in picks if p["market"] == "moneyline")
+    margin = 2 * (30 - 16) + NFL_HFA
+    assert ml["our_prob"] == pytest.approx(blend(win_prob(margin), 0.5, 0.15), abs=0.001)
+
+
+@pytest.mark.parametrize("week, season_type, expected", [
+    (1, 2, False), (2, 2, False), (NFL_FIRST_PICK_WEEK, 2, True), (10, 2, True),
+    (1, 3, True),        # wild card: la postemporada reinicia la numeración
+    (None, None, True),  # sin dato de semana no se bloquea
+])
+def test_is_pickable_week_skips_first_regular_season_weeks(week, season_type, expected):
+    assert is_pickable_week({"week": week, "season_type": season_type}) is expected

@@ -10,6 +10,8 @@ Modelo de probabilidades NFL.
 4. La probabilidad final mezcla modelo con la probabilidad sin vig del mercado
    (DraftKings vía ESPN). El mercado NFL es muy eficiente, así que el modelo
    solo pesa NFL_MODEL_WEIGHT (menos con datos flojos); sin cuota real no hay pick.
+   Los totales están apagados (NFL_TOTALS_ENABLED) y las semanas 1–2 no se apuestan:
+   ver el backtest en value_bot/tools/nfl_backtest.py.
 5. En cada mercado se apuesta el lado de mayor EV (puede ser el underdog) y por
    partido sale a lo sumo una apuesta de lado (moneyline o spread) más el total.
    Underdogs más largos que NFL_MAX_ODDS y EV > NFL_MAX_PICK_VALUE se descartan:
@@ -28,8 +30,13 @@ NFL_HFA           = 1.5    # ventaja de local moderna (~1.5 pts, era ~3 antes de
 NFL_MARGIN_SD     = 13.5   # desviación estándar histórica del margen final
 NFL_TOTAL_SD      = 13.0   # desviación estándar histórica del total de puntos
 NFL_PRIOR_GAMES   = 3      # juegos de media de liga añadidos al rating
-NFL_MODEL_WEIGHT  = 0.4    # peso del modelo frente al mercado sin vig
-NFL_MODEL_WEIGHT_MEDIUM_DQ = 0.25  # con muestra corta o de la temporada anterior
+# Backtest 2026 (91 juegos, semanas 1–6, cierre DraftKings): el peso del modelo que
+# minimiza el Brier en ML y spread fue 0.15; en totales, 0 (el lado del modelo acertó 37 %).
+NFL_MODEL_WEIGHT  = 0.15   # peso del modelo frente al mercado sin vig
+NFL_MODEL_WEIGHT_MEDIUM_DQ = 0.10  # con muestra corta o de la temporada anterior
+NFL_TOTALS_ENABLED = False  # el modelo de totales resta frente al mercado; se evalúa pero no se apuesta
+NFL_FIRST_PICK_WEEK = 3     # semanas 1–2 de temporada regular: ratings con datos del año anterior (3-8, ROI −52 %)
+REGULAR_SEASON_TYPE = 2     # seasontype ESPN; la postemporada (3) reinicia la numeración de semanas
 NFL_MAX_PROB      = 0.85   # techo: en la NFL nada es más seguro que esto
 NFL_MIN_ODDS      = 1.30   # cuotas menores no dejan margen apostable
 NFL_MAX_ODDS      = 3.50   # +250: en underdogs más largos el error del modelo se multiplica por la cuota
@@ -301,6 +308,14 @@ def _total_pick(game, total, market, proj_txt, dq):
     return _best_value(side_pick("Over", p_over, o_odds), side_pick("Under", 1 - p_over, u_odds))
 
 
+def is_pickable_week(game: dict) -> bool:
+    """False en las primeras semanas de temporada regular; sin dato de semana no se bloquea."""
+    week = game.get("week")
+    if week is None or game.get("season_type") != REGULAR_SEASON_TYPE:
+        return True
+    return week >= NFL_FIRST_PICK_WEEK
+
+
 def _qualifies(pick: dict, min_conf: int, value_threshold: float) -> bool:
     """
     Cuota entre NFL_MIN_ODDS y NFL_MAX_ODDS y EV entre NFL_MIN_PICK_VALUE y
@@ -336,7 +351,7 @@ def analyze_nfl_game(game: dict, home_rating: dict, away_rating: dict, league_av
                      min_conf: int = 62, value_threshold: float = 0.04) -> list[dict]:
     """
     Picks de un partido, solo de mercados con cuota real en game["lines"]: a lo
-    sumo una apuesta de lado (moneyline|spread) y un total. Entra si su EV ≥ 0 y
+    sumo una apuesta de lado (moneyline|spread) y un total (si NFL_TOTALS_ENABLED). Entra si su EV ≥ 0 y
     supera min_conf o tiene edge ≥ value_threshold. Sede neutral = sin HFA.
     """
     neutral = bool(game.get("neutral_site"))
@@ -350,7 +365,7 @@ def analyze_nfl_game(game: dict, home_rating: dict, away_rating: dict, league_av
     candidates = [
         _moneyline_pick(game, margin, market, proj_txt, dq),
         _spread_pick(game, margin, market, proj_txt, dq),
-        _total_pick(game, total, market, proj_txt, dq),
+        _total_pick(game, total, market, proj_txt, dq) if NFL_TOTALS_ENABLED else None,
     ]
     picks = _drop_correlated([p for p in candidates if p and _qualifies(p, min_conf, value_threshold)])
     return sorted(picks, key=lambda p: p["confidence"], reverse=True)
