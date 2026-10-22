@@ -507,3 +507,32 @@ def test_moneyline_probability_leans_mostly_on_market():
 ])
 def test_is_pickable_week_skips_first_regular_season_weeks(week, season_type, expected):
     assert is_pickable_week({"week": week, "season_type": season_type}) is expected
+
+
+# ── Texto del razonamiento: modelo vs mercado ─────────────────────
+
+RAIDERS_RAMS = {"home": "Las Vegas Raiders", "away": "Los Angeles Rams"}
+
+
+def test_moneyline_reasoning_shows_model_market_and_blend():
+    # Caso real 22-oct-2026: el modelo da a LV ganador (+1.8) pero el mercado lo tiene +180.
+    market = {"home_ml": 2.8, "away_ml": 1.459}
+    pick = nfl_model._moneyline_pick(RAIDERS_RAMS, 1.8, market, "Proyección", "high")
+    assert pick["side"] == "Las Vegas Raiders"
+    assert "Modelo 55% · mercado 34% → Las Vegas Raiders gana en 37%" in pick["reasoning"]
+
+
+def test_spread_reasoning_shows_model_and_market_for_the_picked_side():
+    market = {"home_spread": 3.5, "home_spread_odds": 1.952, "away_spread_odds": 1.87}
+    pick = nfl_model._spread_pick(RAIDERS_RAMS, 1.8, market, "Proyección", "high")
+    side_is_home = pick["side"] == "Las Vegas Raiders"
+    model_p = cover_prob(1.8, 3.5) if side_is_home else 1 - cover_prob(1.8, 3.5)
+    assert f"Modelo {int(model_p * 100)}% · mercado " in pick["reasoning"]
+    assert f"{pick['side']} cubre en {pick['confidence']}%" in pick["reasoning"]
+
+
+def test_total_reasoning_shows_model_and_market():
+    market = {"total": 48.5, "over_odds": 1.926, "under_odds": 1.893}
+    pick = nfl_model._total_pick(RAIDERS_RAMS, 51.0, market, "Proyección", "high")
+    assert "Total proyectado 51.0 vs línea 48.5" in pick["reasoning"]
+    assert "Modelo " in pick["reasoning"] and " · mercado " in pick["reasoning"]

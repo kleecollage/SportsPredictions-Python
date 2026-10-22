@@ -75,3 +75,51 @@ def test_unresolved_picks_filter_by_sport(temp_db):
     db.save_picks("2026-10-18", [_pick(sport="football"), _pick(sport="nfl", pick_type="X")])
 
     assert [p["sport"] for p in db.get_unresolved_picks(("nba", "nfl"))] == ["nfl"]
+
+
+# ── Rendimiento: solo deportes activos y modelo actual ────────────
+
+def _resolved(run_date, sport, outcome, profit):
+    db.save_picks(run_date, [_pick(sport=sport, home=f"{sport} {run_date} {outcome}")])
+    pick_id = max(p["id"] for p in db.get_unresolved_picks((sport,)))
+    db.save_result(pick_id, outcome, "1-0", profit)
+
+
+@pytest.fixture(params=[True, False], ids=["pandas", "sql"])
+def mixed_history(request, temp_db, monkeypatch):
+    from datetime import date, timedelta
+    monkeypatch.setattr(db, "_PANDAS_OK", request.param and db._PANDAS_OK)
+    today, old = date.today(), date.today() - timedelta(days=3)
+    _resolved(old.isoformat(), "nfl", "loss", -1.0)      # modelo NFL anterior
+    _resolved(today.isoformat(), "nfl", "win", 1.8)      # modelo NFL actual
+    _resolved(today.isoformat(), "nba", "loss", -1.0)    # deporte apagado
+    return today.isoformat()
+
+
+def test_roi_summary_without_filters_counts_everything(mixed_history):
+    assert db.get_roi_summary(days=7)["total_picks"] == 3
+
+
+def test_roi_summary_only_counts_active_sports_and_current_model(mixed_history):
+    roi = db.get_roi_summary(days=7, sports=("nfl",), model_since={"nfl": mixed_history})
+    assert roi["total_picks"] == 1 and roi["win_rate"] == 100.0
+    assert roi["total_profit"] == 1.8 and set(roi["by_sport"]) == {"nfl"}
+
+
+def test_roi_summary_without_current_model_picks_reports_no_data(mixed_history):
+    roi = db.get_roi_summary(days=7, sports=("football",))
+    assert roi.get("error")
+
+
+# ── Reporte semanal: picks recientes y calibración del modelo actual (code review M2) ─
+
+def test_recent_picks_only_from_active_sports_and_current_model(mixed_history):
+    assert len(db.get_recent_picks(days=7)) == 3
+    recent = db.get_recent_picks(days=7, sports=("nfl",), model_since={"nfl": mixed_history})
+    assert [(r["sport"], r["outcome"]) for r in recent] == [("nfl", "win")]
+
+
+def test_calibration_only_from_active_sports_and_current_model(mixed_history):
+    assert sum(c["total_picks"] for c in db.get_model_calibration(min_picks=1)) == 3
+    calib = db.get_model_calibration(min_picks=1, sports=("nfl",), model_since={"nfl": mixed_history})
+    assert sum(c["total_picks"] for c in calib) == 1

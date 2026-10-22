@@ -48,6 +48,13 @@ SPORTS_ENABLED = {
     "nfl":      True,
 }
 
+# run_date (YYYY-MM-DD) desde la que corre el modelo vigente de cada deporte.
+# El rendimiento del mensaje solo cuenta picks desde esa fecha: los de modelos
+# anteriores miden algo que ya no está en producción. Actualizar al recalibrar.
+MODEL_SINCE = {
+    "nfl": "2026-10-19",  # recalibración por backtest (peso 0.15, totales apagados)
+}
+
 # ── Thresholds ────────────────────────────────────────────────────
 DAYS_AHEAD       = 3
 MAX_PICKS_SPORT  = 6

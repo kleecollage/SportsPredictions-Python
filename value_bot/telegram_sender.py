@@ -2,6 +2,7 @@
 import asyncio
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from telegram import Bot
 from telegram.constants import ParseMode
@@ -16,6 +17,8 @@ DAYS_ES   = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "D
 MONTHS_ES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
              "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 SPORT_EMO = {"football": "⚽", "nba": "🏀", "nfl": "🏈"}
+KICKOFF_TZ = ZoneInfo("America/New_York")  # misma zona que el scheduler y las fechas ESPN
+PERF_MIN_SAMPLE = 5  # con menos picks resueltos el rendimiento se muestra con aviso
 
 
 def bar(pct, n=8):
@@ -23,14 +26,30 @@ def bar(pct, n=8):
     return "█" * f + "░" * (n - f)
 
 
-def fmt_ko(iso):
-    if not iso:
+def fmt_ko(iso) -> str:
+    """Kickoff ISO → '25/10 16:25 ET'; solo fecha → '25/10'; cualquier otra cosa → ''."""
+    if not iso or not isinstance(iso, str):
         return ""
     try:
         dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-        return dt.strftime("%d/%m %H:%M UTC")
-    except Exception:
+    except ValueError:
         return ""
+    if len(iso) == len("YYYY-MM-DD"):
+        return dt.strftime("%d/%m")  # sin hora: no inventar una medianoche
+    if dt.tzinfo is None:
+        return dt.strftime("%d/%m %H:%M")
+    return dt.astimezone(KICKOFF_TZ).strftime("%d/%m %H:%M ET")
+
+
+def plural(n: int, word: str) -> str:
+    """'1 pick', '2 picks' (las palabras del mensaje forman el plural con -s)."""
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def _section_counts(groups: list, picks: list, game_word: str, vcount: int = 0) -> str:
+    """'1 juego  ·  1 pick  ·  1 💎 value' para el encabezado de cada deporte."""
+    vsub = f"  ·  {vcount} 💎 value{'s' if vcount > 1 else ''}" if vcount else ""
+    return f"{plural(len(groups), game_word)}  ·  {plural(len(picks), 'pick')}{vsub}"
 
 
 def q_icon(dq):
@@ -129,12 +148,15 @@ def _performance_block(perf: dict) -> str:
     """Genera el bloque HTML de rendimiento de los últimos 7 días."""
     lines = [
         "━━━━━━━━━━━━━━━━━━━━━━",
-        "📈 <b>RENDIMIENTO (últimos 7 días)</b>",
+        "📈 <b>RENDIMIENTO (7 días · modelo actual)</b>",
         "━━━━━━━━━━━━━━━━━━━━━━",
         "",
         f"   🎯 Picks resueltos: <b>{perf['total_picks']}</b>  ·  Win rate: <b>{perf['win_rate']}%</b>",
         f"   💰 ROI: <b>{perf['roi_pct']:+.1f}%</b>  ·  Profit: <b>{perf['total_profit']:+.2f}u</b>",
     ]
+    if perf["total_picks"] < PERF_MIN_SAMPLE:
+        lines.append(f"   ⚠️ <i>Muestra pequeña ({plural(perf['total_picks'], 'pick')}): "
+                     f"todavía no dice nada del modelo.</i>")
     by_sport = perf.get("by_sport", {})
     if by_sport:
         parts = []
@@ -179,7 +201,8 @@ def build_message(fp, np, parlays, upcoming=None, perf=None, nflp=None):
         ]
     else:
         total = len(fp) + len(np) + len(nflp)
-        lines.append(f"🎯 <b>{total} picks generados hoy</b>")
+        generated = "generado" if total == 1 else "generados"
+        lines.append(f"🎯 <b>{plural(total, 'pick')} {generated} hoy</b>")
         lines.append("")
 
         if np:
@@ -201,7 +224,7 @@ def build_message(fp, np, parlays, upcoming=None, perf=None, nflp=None):
                 groups = _group_picks_by_game(regular_picks)
                 lines += [
                     "━━━━━━━━━━━━━━━━━━━━━━",
-                    f"🏀 <b>NBA</b> ({len(groups)} juego{'s' if len(groups)>1 else ''}  ·  {len(regular_picks)} picks)",
+                    f"🏀 <b>NBA</b> ({_section_counts(groups, regular_picks, 'juego')})",
                     "━━━━━━━━━━━━━━━━━━━━━━",
                     "",
                 ]
@@ -211,11 +234,10 @@ def build_message(fp, np, parlays, upcoming=None, perf=None, nflp=None):
 
         if fp:
             vcount = sum(1 for p in fp if p.get("value") and p["value"] >= VALUE_THRESHOLD)
-            vsub   = f"  ·  {vcount} 💎 value{'s' if vcount>1 else ''}" if vcount else ""
             groups = _group_picks_by_game(fp)
             lines += [
                 "━━━━━━━━━━━━━━━━━━━━━━",
-                f"⚽ <b>FÚTBOL</b> ({len(groups)} partido{'s' if len(groups)>1 else ''}  ·  {len(fp)} picks{vsub})",
+                f"⚽ <b>FÚTBOL</b> ({_section_counts(groups, fp, 'partido', vcount)})",
                 "━━━━━━━━━━━━━━━━━━━━━━",
                 "",
             ]
@@ -225,11 +247,10 @@ def build_message(fp, np, parlays, upcoming=None, perf=None, nflp=None):
 
         if nflp:
             vcount = sum(1 for p in nflp if p.get("value") and p["value"] >= VALUE_THRESHOLD)
-            vsub   = f"  ·  {vcount} 💎 value{'s' if vcount>1 else ''}" if vcount else ""
             groups = _group_picks_by_game(nflp)
             lines += [
                 "━━━━━━━━━━━━━━━━━━━━━━",
-                f"🏈 <b>NFL</b> ({len(groups)} juego{'s' if len(groups)>1 else ''}  ·  {len(nflp)} picks{vsub})",
+                f"🏈 <b>NFL</b> ({_section_counts(groups, nflp, 'juego', vcount)})",
                 "━━━━━━━━━━━━━━━━━━━━━━",
                 "",
             ]
@@ -275,7 +296,7 @@ def build_message(fp, np, parlays, upcoming=None, perf=None, nflp=None):
             lines.append("")
 
     # Bloque de rendimiento (solo si hay datos resueltos)
-    if perf and perf.get("total_picks", 0) >= 5:
+    if perf and perf.get("total_picks", 0) >= 1:
         lines.append(_performance_block(perf))
 
     lines += [
@@ -300,13 +321,13 @@ def build_weekly_report(roi: dict, calib: list, recent: list) -> str:
 
     if roi.get("error"):
         lines += [
-            "⚠️ <i>Sin suficientes datos resueltos esta semana.</i>",
+            "⚠️ <i>Sin picks resueltos del modelo actual esta semana.</i>",
             "<i>El reporte se enriquecerá a medida que se acumulen resultados.</i>",
             "",
         ]
     else:
         lines += [
-            f"🎯 <b>Resumen general ({roi['period_days']} días)</b>",
+            f"🎯 <b>Resumen general ({roi['period_days']} días · modelo actual)</b>",
             f"   Picks resueltos: <b>{roi['total_picks']}</b>",
             f"   Win rate: <b>{roi['win_rate']}%</b>",
             f"   ROI: <b>{roi['roi_pct']:+.1f}%</b>  ·  Profit: <b>{roi['total_profit']:+.2f}u</b>",
@@ -320,7 +341,7 @@ def build_weekly_report(roi: dict, calib: list, recent: list) -> str:
                 em = SPORT_EMO.get(sport, "🎯")
                 lines.append(
                     f"   {em} <b>{sport.upper()}</b>: "
-                    f"{sd['win_rate']}% WR  ·  {sd['profit']:+.2f}u  ·  {sd['total']} picks"
+                    f"{sd['win_rate']}% WR  ·  {sd['profit']:+.2f}u  ·  {plural(sd['total'], 'pick')}"
                 )
             lines.append("")
 
@@ -331,7 +352,7 @@ def build_weekly_report(roi: dict, calib: list, recent: list) -> str:
                 if dq in by_quality:
                     qd = by_quality[dq]
                     wr = qd.get("win_rate", round(qd.get("wins", 0) / max(qd.get("total", 1), 1) * 100, 1))
-                    lines.append(f"   {q_icon(dq)} {dq.capitalize()}: {wr}% WR  ·  {qd['total']} picks")
+                    lines.append(f"   {q_icon(dq)} {dq.capitalize()}: {wr}% WR  ·  {plural(qd['total'], 'pick')}")
             lines.append("")
 
     if calib:

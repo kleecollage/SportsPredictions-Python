@@ -66,9 +66,10 @@ Piernas con conf ≥ 68 (fútbol) / ≥ 62 (NBA); doble ≥ 38 %, triple ≥ 27 
 - `results`: la llena `resolver.resolve_pending_picks()` **al inicio de cada `main()` y del reporte semanal**: todos los picks pendientes NBA/NFL cuyo juego ya empezó (hasta 180 días), consultando ESPN por la fecha del juego. Push/empate → `void`. Fútbol aún no se resuelve.
 - `results.pick_id` tiene índice UNIQUE (requisito del `ON CONFLICT`; sin él el INSERT fallaba y la tabla quedó vacía meses).
 - El ROI del mensaje, el reporte semanal y la calibración (`get_calibration_factors`, solo fútbol/NBA) dependen de `results`.
+- El rendimiento del mensaje diario y todo el reporte semanal (ROI, calibración, mejores/peores picks; `main._current_scope`) solo cuentan **deportes activos** y picks con `run_date` ≥ `MODEL_SINCE[deporte]` (`config.py`): al recalibrar un modelo, actualizar esa fecha. El bloque sale desde 1 pick resuelto, con aviso de muestra pequeña por debajo de `PERF_MIN_SAMPLE` (5).
 
 ## Telegram
-Parse mode **HTML** (no MarkdownV2). Mensajes > 3900 chars se parten.
+Parse mode **HTML** (no MarkdownV2). Mensajes > 3900 chars se parten. Kickoffs en hora ET (`fmt_ko`); conteos con `plural()`. El razonamiento NFL muestra `Modelo X% · mercado Y% → Z%` (Z = mezcla = confianza).
 
 ## Convenciones
 - Commits `tipo: descripción` (feat, fix, chore, test…); sin push salvo que se pida.

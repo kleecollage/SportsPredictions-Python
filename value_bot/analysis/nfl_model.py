@@ -260,18 +260,31 @@ def _best_value(*picks: dict) -> dict:
     return max(picks, key=lambda p: p["value"])
 
 
+def _sources_txt(model_p: float, market_p: float) -> str:
+    """'Modelo 55% · mercado 34% → ': de dónde sale la probabilidad final (la mezcla)."""
+    return f"Modelo {int(model_p * 100)}% · mercado {int(market_p * 100)}% → "
+
+
+def _two_sides(model_p: float, market_p: float, dq: str) -> tuple[tuple, tuple]:
+    """(modelo, mercado, mezcla) del primer lado y del contrario."""
+    final = blend(model_p, market_p, _model_weight(dq))
+    return (model_p, market_p, final), (1 - model_p, 1 - market_p, 1 - final)
+
+
 def _moneyline_pick(game, margin, market, proj_txt, dq):
     home_odds, away_odds = market.get("home_ml"), market.get("away_ml")
     if not (home_odds and away_odds):
         return None
-    p_home = blend(win_prob(margin), no_vig_pair(home_odds, away_odds)[0], _model_weight(dq))
+    home_p, away_p = _two_sides(win_prob(margin), no_vig_pair(home_odds, away_odds)[0], dq)
 
-    def side_pick(side: str, prob: float, odds: float) -> dict:
+    def side_pick(side: str, probs: tuple, odds: float) -> dict:
+        model_p, market_p, prob = probs
         return _build_pick("moneyline", side, f"Victoria {side}", prob, odds,
-                           f"{proj_txt}. {side} gana en {_pct(prob)} de escenarios.", dq)
+                           f"{proj_txt}. {_sources_txt(model_p, market_p)}"
+                           f"{side} gana en {_pct(prob)} de escenarios.", dq)
 
-    return _best_value(side_pick(game["home"], p_home, home_odds),
-                       side_pick(game["away"], 1 - p_home, away_odds))
+    return _best_value(side_pick(game["home"], home_p, home_odds),
+                       side_pick(game["away"], away_p, away_odds))
 
 
 def _spread_pick(game, margin, market, proj_txt, dq):
@@ -280,16 +293,18 @@ def _spread_pick(game, margin, market, proj_txt, dq):
     if line is None or not (h_odds and a_odds):
         return None
     home_cover, push, home_miss = spread_outcomes(margin, line)
-    model_p = home_cover / (home_cover + home_miss)
-    p_home = blend(model_p, no_vig_pair(h_odds, a_odds)[0], _model_weight(dq))
+    home_p, away_p = _two_sides(home_cover / (home_cover + home_miss),
+                                no_vig_pair(h_odds, a_odds)[0], dq)
 
-    def side_pick(side: str, side_line: float, prob: float, odds: float) -> dict:
+    def side_pick(side: str, side_line: float, probs: tuple, odds: float) -> dict:
+        model_p, market_p, prob = probs
         return _build_pick("spread", side, f"Hándicap {side} {_fmt_line(side_line)}", prob, odds,
-                           f"{proj_txt}. Mercado {game['home']} {_fmt_line(line)} "
-                           f"→ {side} cubre en {_pct(prob)}{_push_txt(push)}.", dq, push)
+                           f"{proj_txt}. Mercado {game['home']} {_fmt_line(line)}. "
+                           f"{_sources_txt(model_p, market_p)}"
+                           f"{side} cubre en {_pct(prob)}{_push_txt(push)}.", dq, push)
 
-    return _best_value(side_pick(game["home"], line, p_home, h_odds),
-                       side_pick(game["away"], -line, 1 - p_home, a_odds))
+    return _best_value(side_pick(game["home"], line, home_p, h_odds),
+                       side_pick(game["away"], -line, away_p, a_odds))
 
 
 def _total_pick(game, total, market, proj_txt, dq):
@@ -297,15 +312,17 @@ def _total_pick(game, total, market, proj_txt, dq):
     o_odds, u_odds = market.get("over_odds"), market.get("under_odds")
     if line is None or not (o_odds and u_odds):
         return None
-    p_over = blend(over_prob(total, line), no_vig_pair(o_odds, u_odds)[0], _model_weight(dq))
+    over_p, under_p = _two_sides(over_prob(total, line), no_vig_pair(o_odds, u_odds)[0], dq)
     _, push, _ = total_outcomes(total, line)
 
-    def side_pick(label: str, prob: float, odds: float) -> dict:
+    def side_pick(label: str, probs: tuple, odds: float) -> dict:
+        model_p, market_p, prob = probs
         return _build_pick("total", label, f"{label} {line:.1f} Puntos", prob, odds,
-                           f"{proj_txt}. Total proyectado {total:.1f} vs línea {line:.1f}"
-                           f"{_push_txt(push)}.", dq, push)
+                           f"{proj_txt}. Total proyectado {total:.1f} vs línea {line:.1f}. "
+                           f"{_sources_txt(model_p, market_p)}"
+                           f"{label} en {_pct(prob)}{_push_txt(push)}.", dq, push)
 
-    return _best_value(side_pick("Over", p_over, o_odds), side_pick("Under", 1 - p_over, u_odds))
+    return _best_value(side_pick("Over", over_p, o_odds), side_pick("Under", under_p, u_odds))
 
 
 def is_pickable_week(game: dict) -> bool:

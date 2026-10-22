@@ -5,7 +5,7 @@ import logging
 import sys
 from datetime import datetime
 
-from value_bot.config import SPORTS_ENABLED
+from value_bot.config import MODEL_SINCE, SPORTS_ENABLED
 from value_bot.scrapers.playwright_scraper import PLAYWRIGHT_OK
 from value_bot.scrapers.flashscore import run_playwright_scrapers
 from value_bot.analysis.picks import get_football_picks, get_nba_picks
@@ -25,6 +25,16 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 
+def _current_scope() -> dict:
+    """Filtro de rendimiento: deportes activos y picks de su modelo vigente (MODEL_SINCE)."""
+    return {"sports": [sport for sport, on in SPORTS_ENABLED.items() if on], "model_since": MODEL_SINCE}
+
+
+def _current_performance() -> dict:
+    """ROI de 7 días del modelo vigente."""
+    return get_roi_summary(days=7, **_current_scope())
+
+
 def _resolve_results():
     """Resuelve picks pendientes; un fallo aquí no debe frenar el envío."""
     try:
@@ -33,7 +43,7 @@ def _resolve_results():
         log.exception("Resolución de resultados falló")
 
 
-async def main():
+async def main() -> None:
     log.info("═══ Value Bot Pro v4.6 · Multi-Deporte + Playwright ═══")
     active_sports = [k for k, v in SPORTS_ENABLED.items() if v]
     log.info("Deportes activos: %s", active_sports)
@@ -66,7 +76,7 @@ async def main():
     all_picks = football_picks + nba_picks + nfl_picks
     parlays   = build_parlays(all_picks)
     upcoming  = get_upcoming_nba_events() if SPORTS_ENABLED.get("nba") else []
-    perf      = get_roi_summary(days=7)
+    perf      = _current_performance()
     message   = build_message(football_picks, nba_picks, parlays, upcoming, perf=perf, nflp=nfl_picks)
 
     await send_telegram(message)
@@ -85,9 +95,9 @@ async def weekly_report():
     log.info("═══ Value Bot Pro — Reporte Semanal ═══")
     init_db()
     _resolve_results()
-    roi    = get_roi_summary(days=7)
-    calib  = get_model_calibration(min_picks=5)
-    recent = get_recent_picks(days=7)
+    roi    = _current_performance()
+    calib  = get_model_calibration(min_picks=5, **_current_scope())
+    recent = get_recent_picks(days=7, **_current_scope())
     msg    = build_weekly_report(roi, calib, recent)
     await send_telegram(msg)
     log.info("═══ ✓ Reporte semanal enviado ═══")

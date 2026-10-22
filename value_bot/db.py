@@ -242,17 +242,32 @@ def load_picks_df(days: int = 90):
         return pd.DataFrame()
 
 
-def get_roi_summary(days: int = 30) -> dict:
+def _in_scope(sport: str, run_date: str, sports, model_since: dict | None) -> bool:
+    """Pick de un deporte pedido (None = todos) y del modelo vigente de ese deporte."""
+    if sports is not None and sport not in sports:
+        return False
+    since = (model_since or {}).get(sport)
+    return since is None or run_date >= since
+
+
+def _scope_mask(df, sports, model_since: dict | None):
+    """Máscara booleana de _in_scope sobre un DataFrame con columnas sport y run_date."""
+    return pd.Series([_in_scope(sp, rd, sports, model_since)
+                      for sp, rd in zip(df["sport"], df["run_date"])], index=df.index, dtype=bool)
+
+
+def get_roi_summary(days: int = 30, sports=None, model_since: dict | None = None) -> dict:
     """
     Métricas de rendimiento de los últimos N días.
-    Solo picks con outcome resuelto (win/loss).
+    Solo picks con outcome resuelto (win/loss), de `sports` (None = todos) y con
+    run_date ≥ model_since[sport] cuando el deporte tiene fecha de modelo.
     Usa pandas si disponible, SQL puro como fallback.
     """
     if _PANDAS_OK:
         df = load_picks_df(days)
         if df is None or df.empty or "outcome" not in df.columns:
             return {"error": "sin datos resueltos"}
-        df = df[df["outcome"].isin(["win", "loss"])]
+        df = df[df["outcome"].isin(["win", "loss"]) & _scope_mask(df, sports, model_since)]
         if df.empty:
             return {"error": "sin datos resueltos"}
 
@@ -288,12 +303,13 @@ def get_roi_summary(days: int = 30) -> dict:
         # Fallback SQL puro
         with sqlite3.connect(DB_PATH) as conn:
             rows = conn.execute("""
-                SELECT p.sport, p.data_quality, r.outcome, r.profit_units
+                SELECT p.sport, p.data_quality, r.outcome, r.profit_units, p.run_date
                 FROM picks p
                 JOIN results r ON r.pick_id = p.id
                 WHERE p.run_date >= date('now', ?)
                   AND r.outcome IN ('win', 'loss')
             """, (f"-{days} days",)).fetchall()
+        rows = [r[:4] for r in rows if _in_scope(r[0], r[4], sports, model_since)]
 
         if not rows:
             return {"error": "sin datos resueltos"}
@@ -328,16 +344,29 @@ def get_roi_summary(days: int = 30) -> dict:
     }
 
 
-def get_model_calibration(min_picks: int = 10) -> list[dict]:
+def _calibration_row(bucket: int, total: int, wins: int) -> dict:
+    actual_wr = round(wins / total * 100, 1)
+    return {
+        "confidence_bucket": f"{bucket}-{bucket+4}%",
+        "predicted_prob":    bucket + 2,
+        "actual_win_rate":   actual_wr,
+        "delta":             round(actual_wr - (bucket + 2), 1),
+        "total_picks":       total,
+    }
+
+
+def get_model_calibration(min_picks: int = 10, sports=None,
+                          model_since: dict | None = None) -> list[dict]:
     """
     Compara our_prob predicha vs win_rate real agrupada por bucket de confianza.
     Delta negativo = modelo sobreestima; positivo = modelo subestima.
+    sports / model_since: mismo filtro que get_roi_summary.
     """
     if _PANDAS_OK:
         df = load_picks_df(90)
         if df is None or df.empty or "outcome" not in df.columns:
             return []
-        df = df[df["outcome"].isin(["win", "loss"])].copy()
+        df = df[df["outcome"].isin(["win", "loss"]) & _scope_mask(df, sports, model_since)].copy()
         if df.empty:
             return []
         df["bucket"] = (df["confidence"] // 5) * 5
@@ -346,46 +375,27 @@ def get_model_calibration(min_picks: int = 10) -> list[dict]:
               .agg(total=("outcome", "count"),
                    wins=("outcome", lambda x: (x == "win").sum()))
         )
-        result = []
-        for bucket, row in grouped.iterrows():
-            if row["total"] < min_picks:
-                continue
-            actual_wr = round(row["wins"] / row["total"] * 100, 1)
-            result.append({
-                "confidence_bucket": f"{bucket}-{bucket+4}%",
-                "predicted_prob":    int(bucket) + 2,
-                "actual_win_rate":   actual_wr,
-                "delta":             round(actual_wr - (int(bucket) + 2), 1),
-                "total_picks":       int(row["total"]),
-            })
-        return result
+        return [_calibration_row(int(bucket), int(row["total"]), int(row["wins"]))
+                for bucket, row in grouped.iterrows() if row["total"] >= min_picks]
 
     # Fallback SQL puro
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute("""
-            SELECT
-                CAST(p.confidence / 5 AS INT) * 5  AS conf_bucket,
-                COUNT(*)                            AS total,
-                SUM(CASE WHEN r.outcome='win' THEN 1 ELSE 0 END) AS wins
+            SELECT p.sport, p.run_date, p.confidence, r.outcome
             FROM picks p
             JOIN results r ON r.pick_id = p.id
             WHERE r.outcome IN ('win','loss')
-            GROUP BY conf_bucket
-            HAVING total >= ?
-            ORDER BY conf_bucket
-        """, (min_picks,)).fetchall()
+        """).fetchall()
 
-    result = []
-    for bucket, total, wins in rows:
-        actual_wr = round(wins / total * 100, 1)
-        result.append({
-            "confidence_bucket": f"{bucket}-{bucket+4}%",
-            "predicted_prob":    bucket + 2,
-            "actual_win_rate":   actual_wr,
-            "delta":             round(actual_wr - (bucket + 2), 1),
-            "total_picks":       total,
-        })
-    return result
+    buckets: dict[int, tuple[int, int]] = {}
+    for sport, run_date, confidence, outcome in rows:
+        if not _in_scope(sport, run_date, sports, model_since):
+            continue
+        bucket = int(confidence or 0) // 5 * 5
+        total, wins = buckets.get(bucket, (0, 0))
+        buckets = {**buckets, bucket: (total + 1, wins + (outcome == "win"))}
+    return [_calibration_row(bucket, total, wins)
+            for bucket, (total, wins) in sorted(buckets.items()) if total >= min_picks]
 
 
 def get_calibration_factors(min_picks_per_bucket: int = 15) -> dict:
@@ -441,8 +451,8 @@ def get_calibration_factors(min_picks_per_bucket: int = 15) -> dict:
     return factors
 
 
-def get_recent_picks(days: int = 7) -> list[dict]:
-    """Picks de los últimos N días con su resultado si está disponible."""
+def get_recent_picks(days: int = 7, sports=None, model_since: dict | None = None) -> list[dict]:
+    """Picks de los últimos N días con su resultado; sports / model_since como en get_roi_summary."""
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute("""
             SELECT p.run_date, p.sport, p.league, p.home, p.away, p.pick_type,
@@ -457,4 +467,5 @@ def get_recent_picks(days: int = 7) -> list[dict]:
     cols = ["run_date", "sport", "league", "home", "away", "pick_type",
             "confidence", "est_odds", "our_prob", "data_quality",
             "created_at", "outcome", "profit_units"]
-    return [dict(zip(cols, r)) for r in rows]
+    picks = [dict(zip(cols, r)) for r in rows]
+    return [p for p in picks if _in_scope(p["sport"], p["run_date"], sports, model_since)]
