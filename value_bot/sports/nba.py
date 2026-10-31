@@ -478,7 +478,7 @@ def _game(date_str: str, home: str, away: str, source: str, **extra) -> dict:
         "home": home, "home_id": None, "away": away, "away_id": None,
         "home_record": "", "away_record": "", "venue": "",
         "is_finals": False,  # solo ESPN dice si es la Final (series_summary)
-        "series_summary": "", "source": source, **extra,
+        "series_summary": "", "event_id": "", "lines": {}, "source": source, **extra,
     }
 
 
@@ -499,7 +499,10 @@ def _api_sports_games(date_str: str) -> list[dict]:
 
 
 def _with_espn(games: list[dict], date_str: str) -> list[dict]:
-    """Fuente 2: ESPN completa récords / sede / Finales del mismo partido o agrega los que falten."""
+    """
+    Fuente 2: ESPN completa récords / sede / Finales / event_id / líneas DraftKings
+    del mismo partido o agrega los que falten. Sin ESPN no hay líneas → sin picks.
+    """
     result = list(games)
     for ev in espn_nba_games(date_str):
         parsed = espn_parse_nba(ev)
@@ -509,6 +512,7 @@ def _with_espn(games: list[dict], date_str: str) -> list[dict]:
             "is_finals": parsed["is_finals"], "series_summary": parsed["series_summary"],
             "home_record": parsed.get("home_record", ""), "away_record": parsed.get("away_record", ""),
             "venue": parsed.get("venue", ""),
+            "event_id": parsed.get("event_id", ""), "lines": parsed.get("lines", {}),
         }
         idx = next((i for i, g in enumerate(result) if _same_matchup(g, parsed)), None)
         if idx is None:

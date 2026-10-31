@@ -150,7 +150,8 @@ def test_form_without_league_stats_is_not_enough(monkeypatch):
 
 def test_game_without_stats_produces_no_picks(monkeypatch):
     monkeypatch.setattr(picks_mod, "get_best_nba_stats", lambda g: ({}, {}, {}, {}))
-    game = {"home": "Boston Celtics", "away": "Chicago Bulls", "home_record": "2-2", "away_record": "1-3"}
+    game = {"home": "Boston Celtics", "away": "Chicago Bulls", "home_record": "2-2", "away_record": "1-3",
+            "lines": {"home_ml": 1.5, "away_ml": 2.6}}
     assert picks_mod.analyze_nba_game(game) == []
 
 

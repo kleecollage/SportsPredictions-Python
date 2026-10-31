@@ -53,7 +53,7 @@ SPORTS_ENABLED = {
 # anteriores miden algo que ya no está en producción. Actualizar al recalibrar.
 MODEL_SINCE = {
     "nfl": "2026-10-19",  # recalibración por backtest (peso 0.15, totales apagados)
-    "nba": "2026-10-29",  # stats por ID de equipo y por juego; sin picks sin stats
+    "nba": "2026-10-31",  # picks solo contra líneas ESPN, lado por EV (nba_model)
 }
 
 # ── Thresholds ────────────────────────────────────────────────────

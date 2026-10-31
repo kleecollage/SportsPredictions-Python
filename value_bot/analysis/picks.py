@@ -4,21 +4,25 @@ import logging
 from collections import defaultdict
 from datetime import datetime
 
+from value_bot.analysis.market import SIDE_MARKETS
+from value_bot.analysis.nba_model import analyze_nba_game as analyze_nba_market
 from value_bot.config import (
     MIN_CONFIDENCE, MAX_PICKS_SPORT, VALUE_THRESHOLD,
-    LEAGUE_AVERAGES, LEAGUE_AVG_DEFAULT, est_odds, edge,
+    LEAGUE_AVERAGES, LEAGUE_AVG_DEFAULT, est_odds, edge, nba_api_season,
 )
 from value_bot.sports.nba import get_nba_games, get_best_nba_stats
 from value_bot.sports.football import collect_football_fixtures, build_football_stats, get_real_odds
 
+log = logging.getLogger(__name__)
+
 try:
     from value_bot.db import already_sent_today as _already_sent, get_calibration_factors as _get_cal
-    from value_bot.db import already_sent_for_game as _already_sent_for_game
+    from value_bot.db import already_sent_for_event as _already_sent_for_event
     _DB_DEDUP = True
 except ImportError:
     _DB_DEDUP = False
     def _already_sent(*_): return False
-    def _already_sent_for_game(*_): return False
+    def _already_sent_for_event(*_, **__): return False
     def _get_cal(*_): return {}
 
 
@@ -34,8 +38,6 @@ def _apply_calibration(pick: dict, factors: dict) -> dict:
     new_prob = round(min(0.95, (pick.get("our_prob") or pick["confidence"] / 100) * factor), 3)
     pick = {**pick, "confidence": new_conf, "our_prob": new_prob}
     return pick
-
-log = logging.getLogger(__name__)
 
 
 def _form_emoji(form):
@@ -68,272 +70,47 @@ def _poisson_btts(exp_h: float, exp_a: float) -> float:
 
 
 # ── NBA picks ─────────────────────────────────────────────────────
+# Solo contra líneas reales de ESPN (nba_model). Sin calibración por historial:
+# la probabilidad ya está anclada al mercado y la cuota es real.
 
-def analyze_nba_game(game):
-    """Generates 3-5 picks per game."""
-    h_stats, a_stats, splits, h2h = get_best_nba_stats(game)
-    picks = []
-
-    is_finals  = game.get("is_finals", False)
-    series_txt = game.get("series_summary", "")
-    ctx        = (f" [{series_txt}]" if series_txt
-                  else (" [NBA Finals]" if is_finals else ""))
-
-    if h_stats and a_stats:
-        h_form = h_stats.get("form", ""); a_form = a_stats.get("form", "")
-        h_fe   = _form_emoji(h_form) if h_form else "—"
-        a_fe   = _form_emoji(a_form) if a_form else "—"
-
-        # ── Proyección con splits situacionales ──────────────────────
-        # Si hay splits home/away, usamos los ppg/opp_ppg situacionales
-        # (Boston en casa vs Chicago de visitante), que son más precisos.
-        # Si no hay splits, caemos a los promedios globales de temporada.
-        h_split = splits.get("home", {})
-        a_split = splits.get("away", {})
-
-        h_ppg_eff = h_split.get("ppg",     h_stats["ppg"])
-        h_opp_eff = h_split.get("opp_ppg", h_stats["opp_ppg"])
-        a_ppg_eff = a_split.get("ppg",     a_stats["ppg"])
-        a_opp_eff = a_split.get("opp_ppg", a_stats["opp_ppg"])
-
-        # Guardamos también los valores globales para reasoning
-        h_ppg = h_stats["ppg"]
-
-        using_splits = bool(h_split and a_split)
-        projected = (h_ppg_eff + a_opp_eff + a_ppg_eff + h_opp_eff) / 2
-
-        if not (180.0 <= projected <= 275.0):
-            log.warning("NBA línea fuera de rango: %.1f pts → usando default", projected)
-            projected = 218.5 if is_finals else 221.0
-        game_line = round(projected, 1)
-
-        splits_note = " (splits sit.)" if using_splits else ""
-        dq_base     = "high" if using_splits else "high"   # sigue high, splits refuerzan
-
-        # ── H2H: ajuste de confianza para el total ───────────────────
-        # Si el H2H histórico apunta en la misma dirección que Poisson,
-        # subimos confianza hasta +5pts. Si contradice, bajamos -5pts.
-        h2h_conf_adj = 0
-        h2h_note     = ""
-        if h2h:
-            n = h2h["total_games"]
-            h2h_note = (f" | H2H {n}j: avg {h2h['avg_total']:.0f}pts, "
-                        f"O215={h2h['over_215_pct']:.0f}%")
-            if projected >= 215:
-                if h2h["over_215_pct"] >= 60:
-                    h2h_conf_adj = +5   # H2H confirma Over
-                elif h2h["over_215_pct"] <= 35:
-                    h2h_conf_adj = -5   # H2H contradice Over
-            else:
-                if h2h["over_215_pct"] <= 40:
-                    h2h_conf_adj = +5   # H2H confirma Under
-                elif h2h["over_215_pct"] >= 65:
-                    h2h_conf_adj = -5   # H2H contradice Under
-
-        # Pick 1: Game total
-        if projected >= 218:
-            prob = min(0.80, 0.54 + (projected - 210) * 0.008)
-            conf = min(85, int(prob * 100) + h2h_conf_adj)
-            picks.append({
-                "type": f"Over {game_line} Puntos",
-                "confidence": max(MIN_CONFIDENCE, conf),
-                "our_prob": round(prob, 3),
-                "est_odds": est_odds(prob),
-                "value": None,
-                "reasoning": (f"{game['home']}: {h_ppg_eff:.0f}pts{splits_note} {h_fe} | "
-                              f"{game['away']}: {a_ppg_eff:.0f}pts{splits_note} {a_fe} | "
-                              f"Proyección ~{projected:.0f}pts{h2h_note}{ctx}"),
-                "data_quality": dq_base,
-            })
-        elif projected <= 210:
-            prob = min(0.76, 0.54 + (210 - projected) * 0.007)
-            conf = min(82, int(prob * 100) + h2h_conf_adj)
-            picks.append({
-                "type": f"Under {game_line} Puntos",
-                "confidence": max(MIN_CONFIDENCE, conf),
-                "our_prob": round(prob, 3),
-                "est_odds": est_odds(prob),
-                "value": None,
-                "reasoning": (f"Defensas dominantes. {game['home']} concede {h_opp_eff:.0f}/j, "
-                              f"{game['away']} concede {a_opp_eff:.0f}/j → ~{projected:.0f}pts"
-                              f"{h2h_note}{ctx}"),
-                "data_quality": dq_base,
-            })
-        else:
-            direction = "Over" if projected >= 214 else "Under"
-            conf = min(68, 63 + h2h_conf_adj)
-            picks.append({
-                "type": f"{direction} {game_line} Puntos",
-                "confidence": max(MIN_CONFIDENCE, conf), "our_prob": 0.63,
-                "est_odds": est_odds(0.63), "value": None,
-                "reasoning": (f"Proyección equilibrada ~{projected:.0f}pts{splits_note}. "
-                              f"{game['home']} {h_ppg_eff:.0f}/j vs {game['away']} {a_ppg_eff:.0f}/j"
-                              f"{h2h_note}{ctx}"),
-                "data_quality": "medium",
-            })
-
-        # Pick 2: Moneyline
-        # Si hay splits, el win_pct situacional pesa más que el promedio global
-        h_wr_eff = h_split.get("win_pct", h_stats["win_rate"]) if h_split else h_stats["win_rate"]
-        a_wr_eff = a_split.get("win_pct", a_stats["win_rate"]) if a_split else a_stats["win_rate"]
-        h_str = h_wr_eff + h_stats.get("form_pts", 0) * 2 + 8   # +8 ventaja local
-        a_str = a_wr_eff + a_stats.get("form_pts", 0) * 2
-        diff  = h_str - a_str
-
-        # H2H: si el equipo local tiene % de victorias H2H alto, suma al diff
-        if h2h and h2h.get("home_win_pct", 50) >= 65:
-            diff += 4   # históricamente domina de local en este matchup
-        elif h2h and h2h.get("home_win_pct", 50) <= 35:
-            diff -= 4   # históricamente pierde de local en este matchup
-
-        if abs(diff) >= 15:
-            if diff > 0:
-                fav       = game["home"]
-                fav_wr    = h_wr_eff
-                fav_pm    = h_stats.get("pm", 0)
-                fav_fe_s  = h_fe
-                fav_split = "en casa" if h_split else ""
-            else:
-                fav       = game["away"]
-                fav_wr    = a_wr_eff
-                fav_pm    = a_stats.get("pm", 0)
-                fav_fe_s  = a_fe
-                fav_split = "de visitante" if a_split else ""
-            prob = min(0.78, 0.52 + abs(diff) * 0.007)
-            h2h_win_note = (f" | H2H WR local {h2h['home_win_pct']:.0f}%" if h2h else "")
-            picks.append({
-                "type": f"Victoria {fav}",
-                "confidence": int(prob * 100),
-                "our_prob": round(prob, 3),
-                "est_odds": est_odds(prob),
-                "value": None,
-                "reasoning": (f"{fav} {fav_split}: {fav_wr:.0f}% victorias {fav_fe_s}, "
-                              f"margin {fav_pm:+.1f}pts/j{h2h_win_note}{ctx}"),
-                "data_quality": "high",
-            })
-        elif is_finals:
-            picks.append({
-                "type": f"Victoria {game['home']} (Local)",
-                "confidence": 64, "our_prob": 0.64,
-                "est_odds": est_odds(0.64), "value": None,
-                "reasoning": (f"Partido parejo — ventaja histórica de local en Finals. "
-                              f"{game['home']} {h_fe}{ctx}"),
-                "data_quality": "medium",
-            })
-
-        # Pick 3: Spread
-        if abs(diff) >= 18:
-            fav_s  = game["home"] if diff > 0 else game["away"]
-            spread = 6.5 if abs(diff) >= 28 else (5.0 if abs(diff) >= 22 else 3.5)
-            sp_prob = min(0.70, 0.54 + abs(diff) * 0.006)
-            picks.append({
-                "type": f"Hándicap {fav_s} -{spread:.1f}",
-                "confidence": int(sp_prob * 100),
-                "our_prob": round(sp_prob, 3),
-                "est_odds": 1.91,
-                "value": None,
-                "reasoning": (f"{fav_s} superior en {abs(diff):.0f}pts de fuerza estimada. "
-                              f"Spread proyectado -{spread:.1f}pts{ctx}"),
-                "data_quality": "medium",
-            })
-
-        # Pick 4: Team Total
-        if h_ppg >= 112:
-            tt_line = round(h_ppg * 0.95, 1)
-            tt_prob = min(0.68, 0.54 + (h_ppg - 110) * 0.007)
-            picks.append({
-                "type": f"Total {game['home'].split()[-1]} Over {tt_line}",
-                "confidence": int(tt_prob * 100),
-                "our_prob": round(tt_prob, 3),
-                "est_odds": est_odds(tt_prob),
-                "value": None,
-                "reasoning": (f"{game['home']} promedia {h_ppg:.0f}pts/j "
-                              f"(forma {h_fe}). Team total estimado >{tt_line}{ctx}"),
-                "data_quality": "medium",
-            })
-
-        # Pick 5: 1st Half Total
-        # projected = total esperado del partido (ej. 228pts)
-        # primera mitad ≈ 49% del total, con pequeño descuento por ritmo inicial
-        half_line = round(projected * 0.49 * 0.98, 1)   # ej. 228 * 0.49 * 0.98 ≈ 109.4
-        half_prob = 0.65 if projected >= 218 else 0.63
-        picks.append({
-            "type": f"1ª Mitad Over {half_line}",
-            "confidence": int(half_prob * 100),
-            "our_prob": half_prob,
-            "est_odds": est_odds(half_prob),
-            "value": None,
-            "reasoning": (f"Ritmo alto de salida esperado. "
-                          f"Total proyectado ~{projected:.0f}pts → "
-                          f"~{half_line:.0f}pts en 1ª mitad{ctx}"),
-            "data_quality": "medium",
-        })
-
-        # Bonus Finals: Series winner
-        if is_finals and series_txt:
-            h_last = game["home"].split()[-1].lower()
-            a_last = game["away"].split()[-1].lower()
-            h_leads = h_last + " lead" in series_txt.lower()
-            a_leads = a_last + " lead" in series_txt.lower()
-            if h_leads or a_leads:
-                leader       = game["home"] if h_leads else game["away"]
-                leader_stats = h_stats if h_leads else a_stats
-                picks.append({
-                    "type": f"Ganador Serie: {leader}",
-                    "confidence": 67, "our_prob": 0.67,
-                    "est_odds": est_odds(0.67), "value": None,
-                    "reasoning": (f"{leader} lidera la serie. "
-                                  f"{leader_stats['win_rate']:.0f}% victorias en Playoffs{ctx}"),
-                    "data_quality": "medium",
-                })
-
-    else:
-        # Sin stats de los dos equipos no hay proyección: no se inventan picks genéricos.
+def analyze_nba_game(game: dict) -> list[dict]:
+    """Picks de un juego; sin líneas de mercado ni stats de ambos equipos no hay picks."""
+    if not game.get("lines"):
+        log.info("NBA %s vs %s: sin líneas de mercado (ESPN) → sin picks", game["home"], game["away"])
+        return []
+    h_stats, a_stats, splits, _h2h = get_best_nba_stats(game)
+    if not (h_stats and a_stats):
         log.info("NBA %s vs %s: sin stats de ambos equipos → sin picks", game["home"], game["away"])
-
-    # Filtrar por confianza mínima Y por cuota mínima apostable
-    # Cuota ≤ 1.30 significa que la casa ya descuenta ~77%+ → sin edge real
-    MIN_ODDS = 1.30
-    picks = [
-        p for p in picks
-        if p["confidence"] >= MIN_CONFIDENCE and p.get("est_odds", 0) > MIN_ODDS
-    ]
-    picks.sort(key=lambda x: x["confidence"], reverse=True)
-    return picks
+        return []
+    return analyze_nba_market(game, h_stats, a_stats, splits, nba_api_season(),
+                              min_conf=MIN_CONFIDENCE, value_threshold=VALUE_THRESHOLD)
 
 
-def get_nba_picks():
-    games = get_nba_games()
+def _nba_already_sent(event_id: str | None, pick: dict) -> bool:
+    """Un pick por partido y mercado entre corridas; una sola apuesta de lado por partido."""
+    if not (_DB_DEDUP and event_id):
+        return False
+    markets = SIDE_MARKETS if pick["market"] in SIDE_MARKETS else (pick["market"],)
+    return any(_already_sent_for_event(event_id, market, sport="nba") for market in markets)
+
+
+def get_nba_picks() -> list[dict]:
     all_picks = []
-    cal_factors = _get_cal() if _DB_DEDUP else {}
+    for game in get_nba_games():
+        for pick in analyze_nba_game(game):
+            if _nba_already_sent(game.get("event_id"), pick):
+                log.info("NBA dedup BD: %s ya enviado para %s vs %s", pick["market"], game["home"], game["away"])
+                continue
+            all_picks.append({
+                **game, **pick,
+                "sport":  "nba",
+                "flag":   "🏆" if game.get("is_finals") else "🏀",
+                "league": "NBA Finals" if game.get("is_finals") else "NBA",
+            })
 
-    for game in games:
-        game_picks = analyze_nba_game(game)
-        for pd in game_picks:
-            pd = _apply_calibration(pd, cal_factors)
-            if pd["confidence"] >= MIN_CONFIDENCE:
-                all_picks.append({
-                    **game, **pd,
-                    "sport":  "nba",
-                    "flag":   "🏆" if game.get("is_finals") else "🏀",
-                    "league": "NBA Finals" if game.get("is_finals") else "NBA",
-                })
-
-    all_picks.sort(
-        key=lambda x: (1 if x.get("is_finals") else 0, x["confidence"]),
-        reverse=True,
-    )
-
-    # Dedup contra BD: mismo pick para el mismo juego en cualquier corrida previa
-    if _DB_DEDUP:
-        before = len(all_picks)
-        all_picks = [
-            p for p in all_picks
-            if not _already_sent_for_game("nba", p["home"], p["away"], p.get("date", ""), p["type"])
-        ]
-        if before != len(all_picks):
-            log.info("NBA dedup BD: %d picks ya enviados para esos juegos", before - len(all_picks))
-
+    # Value bets primero, luego por confianza
+    all_picks.sort(key=lambda p: ((p.get("value") or 0) >= VALUE_THRESHOLD, p["confidence"]),
+                   reverse=True)
     result = all_picks[:MAX_PICKS_SPORT]
     log.info("NBA picks: %d", len(result))
     return result

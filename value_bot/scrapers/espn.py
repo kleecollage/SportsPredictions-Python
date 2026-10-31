@@ -4,6 +4,7 @@ import requests
 from datetime import datetime, timedelta
 
 from value_bot.config import ESPN_NBA_URL, http_get, PLAYWRIGHT_ENABLED
+from value_bot.scrapers.espn_lines import parse_lines
 from value_bot.scrapers.playwright_scraper import PLAYWRIGHT_OK, _build_stealth_browser, _human_delay
 
 try:
@@ -52,6 +53,8 @@ def espn_parse_nba(event):
     is_finals  = _is_nba_finals(series_txt)
 
     return {
+        "event_id":       str(event.get("id") or ""),
+        "lines":          parse_lines(comp),
         "home":           home.get("team", {}).get("displayName", "?"),
         "away":           away.get("team", {}).get("displayName", "?"),
         "home_record":    record(home),
