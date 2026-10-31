@@ -67,6 +67,11 @@ def _mae(values: list[float]) -> float:
     return sum(abs(v) for v in values) / len(values)
 
 
+def residual_sd(values: list[float]) -> float:
+    """Raíz del error cuadrático medio: la SD que el modelo debería usar para ese mercado."""
+    return math.sqrt(sum(v * v for v in values) / len(values))
+
+
 def _side_hits_by_gap(rows, market, outcome, model_key, market_key, buckets):
     lines = []
     for lo, hi in buckets:
@@ -88,7 +93,7 @@ def _summary_line(label: str, picks: list[dict]) -> str:
             f"victorias esperadas={s['expected_wins']:5.1f}")
 
 
-def _picks_section(rows: list[dict]) -> list[str]:
+def _picks_section(rows: list[dict], period: str) -> list[str]:
     picks = [{**p, "week": r["week"], "dq": r["dq"]} for r in rows for p in r["picks"]]
     out = [f"=== PICKS ({len(rows)} juegos, {sum(r['pickable'] for r in rows)} elegibles) ===",
            _summary_line("TOTAL", picks)]
@@ -107,13 +112,13 @@ def _picks_section(rows: list[dict]) -> list[str]:
             for lo, hi in VALUE_BUCKETS]
     out.append("Por data_quality:")
     out += [_summary_line(dq, [p for p in picks if p["dq"] == dq]) for dq in ("high", "medium")]
-    out.append("Por semana:")
-    out += [_summary_line(f"semana {wk}", [p for p in picks if p["week"] == wk])
+    out.append(f"Por {period}:")
+    out += [_summary_line(f"{period} {wk}", [p for p in picks if p["week"] == wk])
             for wk in sorted({p["week"] for p in picks if p["week"] is not None})]
     return out
 
 
-def _market_section(rows: list[dict]) -> list[str]:
+def _market_section(rows: list[dict], spread_gaps, total_gaps) -> list[str]:
     out = ["", "=== MODELO vs MERCADO (todas las predicciones, sin filtro) ==="]
     for market, outcome in OUTCOME_KEYS.items():
         m = probability_metrics([r[market] for r in rows], outcome)
@@ -130,15 +135,23 @@ def _market_section(rows: list[dict]) -> list[str]:
         "MAE total : modelo %.2f  mercado %.2f" % (
             _mae([r["model_total"] - r["actual_total"] for r in rows]),
             _mae([r["market_total"] - r["actual_total"] for r in rows])),
+        "SD residual margen: modelo %.2f  mercado %.2f" % (
+            residual_sd([-r["model_spread"] - r["actual_margin"] for r in rows]),
+            residual_sd([-r["market_spread"] - r["actual_margin"] for r in rows])),
+        "SD residual total : modelo %.2f  mercado %.2f" % (
+            residual_sd([r["model_total"] - r["actual_total"] for r in rows]),
+            residual_sd([r["market_total"] - r["actual_total"] for r in rows])),
         "ATS del lado del modelo según desacuerdo con el spread de mercado:",
-        *_side_hits_by_gap(rows, "spread", "home_covered", "model_spread", "market_spread", SPREAD_GAP_BUCKETS),
+        *_side_hits_by_gap(rows, "spread", "home_covered", "model_spread", "market_spread", spread_gaps),
         "Over/Under del lado del modelo según desacuerdo con el total de mercado:",
-        *_side_hits_by_gap(rows, "total", "over", "model_total", "market_total", TOTAL_GAP_BUCKETS),
+        *_side_hits_by_gap(rows, "total", "over", "model_total", "market_total", total_gaps),
     ]
     return out
 
 
-def render_report(rows: list[dict]) -> str:
+def render_report(rows: list[dict], period: str = "semana", spread_gaps=SPREAD_GAP_BUCKETS,
+                  total_gaps=TOTAL_GAP_BUCKETS) -> str:
+    """period: cómo se agrupa row["week"] (semana NFL, mes NBA); *_gaps: tramos de desacuerdo en pts."""
     if not rows:
-        return "Backtest NFL: sin juegos con líneas de cierre en el rango."
-    return "\n".join(_picks_section(rows) + _market_section(rows))
+        return "Backtest: sin juegos con líneas de cierre en el rango."
+    return "\n".join(_picks_section(rows, period) + _market_section(rows, spread_gaps, total_gaps))

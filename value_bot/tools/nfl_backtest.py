@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from value_bot.analysis.nfl_model import (
-    NFL_HFA, _data_quality, _model_weight, american_to_decimal, analyze_nfl_game, blend,
+    NFL_HFA, _data_quality, _model_weight, analyze_nfl_game, blend,
     cover_prob, is_pickable_week, no_vig_pair, over_prob, project_game, team_rating,
 )
 from value_bot.config import (
@@ -32,56 +32,16 @@ from value_bot.sports.nfl import (
     PICKABLE_SEASON_TYPES, REGULAR_SEASON, SCHEDULE_FETCH_WORKERS, _status_name, _to_float,
     fetch_team_ids, league_average,
 )
+from value_bot.tools.backtest_common import grade, has_full_market, outcome, parse_dt, parse_pickcenter
 from value_bot.tools.backtest_report import render_report
 
 log = logging.getLogger(__name__)
 
 ESPN_NFL_SUMMARY_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary"
-FULL_MARKET_KEYS = ("home_ml", "away_ml", "home_spread", "home_spread_odds", "away_spread_odds",
-                    "total", "over_odds", "under_odds")
 DEFAULT_DAYS = 45  # ~temporada regular hasta mediados de octubre
 
 
 # ── Puro ──────────────────────────────────────────────────────────
-
-def _parse_dt(raw: str) -> datetime:
-    return datetime.fromisoformat(raw.replace("Z", "+00:00"))
-
-
-def parse_pickcenter(summary: dict) -> dict:
-    """summary.pickcenter de ESPN → mercado con el formato de game["lines"] (perspectiva local)."""
-    pc = (summary.get("pickcenter") or [{}])[0]
-    home, away = pc.get("homeTeamOdds") or {}, pc.get("awayTeamOdds") or {}
-    market = {
-        "provider":         (pc.get("provider") or {}).get("name", ""),
-        "home_ml":          american_to_decimal(home.get("moneyLine")),
-        "away_ml":          american_to_decimal(away.get("moneyLine")),
-        "home_spread":      pc.get("spread"),  # −3 = local favorito por 3
-        "home_spread_odds": american_to_decimal(home.get("spreadOdds")),
-        "away_spread_odds": american_to_decimal(away.get("spreadOdds")),
-        "total":            pc.get("overUnder"),
-        "over_odds":        american_to_decimal(pc.get("overOdds")),
-        "under_odds":       american_to_decimal(pc.get("underOdds")),
-    }
-    return {k: v for k, v in market.items() if v not in (None, "")}
-
-
-def has_full_market(lines: dict) -> bool:
-    return all(lines.get(k) is not None for k in FULL_MARKET_KEYS)
-
-
-def grade(pick: dict, game: dict, home_score: float, away_score: float) -> str:
-    """win | loss | void de un pick contra el marcador final."""
-    margin, total, lines = home_score - away_score, home_score + away_score, game["lines"]
-    if pick["market"] == "total":
-        diff, backs_positive = total - lines["total"], pick["side"] == "Over"
-    else:
-        line = lines["home_spread"] if pick["market"] == "spread" else 0
-        diff, backs_positive = margin + line, pick["side"] == game["home"]
-    if diff == 0:
-        return "void"
-    return "win" if (diff > 0) == backs_positive else "loss"
-
 
 def _scores_before(history: dict, team_id: str, kickoff: datetime) -> list[tuple[float, float]]:
     return [(pf, pa) for played, pf, pa in history.get(team_id, []) if played < kickoff]
@@ -117,17 +77,13 @@ def _probabilities(lines, home_rating, away_rating, league_avg, neutral):
     return probs, exp_h, exp_a
 
 
-def _outcome(diff: float) -> bool | None:
-    return None if diff == 0 else diff > 0
-
-
 def replay_game(event: dict, lines: dict, current: dict, previous: dict, team_ids: list[str]) -> dict:
     """Re-corre el modelo para un juego terminado con lo que se sabía antes del kickoff."""
     comp = event["competitions"][0]
     home = next(c for c in comp["competitors"] if c["homeAway"] == "home")
     away = next(c for c in comp["competitors"] if c["homeAway"] == "away")
     hs, as_ = float(home["score"]), float(away["score"])
-    kickoff = _parse_dt(event["date"])
+    kickoff = parse_dt(event["date"])
     game = {
         "event_id": event["id"], "home": home["team"]["displayName"], "away": away["team"]["displayName"],
         "week": (event.get("week") or {}).get("number"), "season_type": (event.get("season") or {}).get("type"),
@@ -138,9 +94,9 @@ def replay_game(event: dict, lines: dict, current: dict, previous: dict, team_id
     picks = analyze_nfl_game(game, hr, ar, league_avg, min_conf=MIN_CONFIDENCE,
                              value_threshold=VALUE_THRESHOLD) if pickable else []
     probs, exp_h, exp_a = _probabilities(lines, hr, ar, league_avg, game["neutral_site"])
-    probs["ml"]["home_won"] = _outcome(hs - as_)
-    probs["spread"]["home_covered"] = _outcome(hs - as_ + lines["home_spread"])
-    probs["total"]["over"] = _outcome(hs + as_ - lines["total"])
+    probs["ml"]["home_won"] = outcome(hs - as_)
+    probs["spread"]["home_covered"] = outcome(hs - as_ + lines["home_spread"])
+    probs["total"]["over"] = outcome(hs + as_ - lines["total"])
     return {
         "week": game["week"], "date": event["date"], "game": f"{game['away']} @ {game['home']}",
         "score": f"{as_:.0f}-{hs:.0f}", "league_avg": round(league_avg, 2), "dq": _data_quality(hr, ar),
@@ -169,7 +125,7 @@ def _team_history(team_id: str, season: int) -> list[tuple[datetime, float, floa
         opp = next((c for c in competitors if c is not own), None)
         pf, pa = (_to_float(own.get("score")), _to_float(opp.get("score"))) if own and opp else (None, None)
         if pf is not None and pa is not None:
-            out.append((_parse_dt(event["date"]), pf, pa))
+            out.append((parse_dt(event["date"]), pf, pa))
     return out
 
 
