@@ -26,6 +26,20 @@ Funciones puras: no hacen requests ni leen la BD.
 import math
 from collections.abc import Sequence
 
+from value_bot.analysis.market import (  # noqa: F401 (SIDE_MARKETS / american_to_decimal: se reexportan)
+    SIDE_MARKETS,
+    american_to_decimal,
+    best_value as _best_value,
+    drop_correlated as _drop_correlated,
+    expected_value as _expected_value,
+    fmt_line as _fmt_line,
+    no_vig_pair,
+    normal_cdf as _normal_cdf,
+    outcomes as _outcomes,
+    push_txt as _push_txt,
+    sources_txt as _sources_txt,
+)
+
 NFL_HFA           = 1.5    # ventaja de local moderna (~1.5 pts, era ~3 antes de 2020)
 NFL_MARGIN_SD     = 13.5   # desviación estándar histórica del margen final
 NFL_TOTAL_SD      = 13.0   # desviación estándar histórica del total de puntos
@@ -54,34 +68,6 @@ NFL_MAX_PICK_VALUE     = 0.15  # EV mayor en un mercado tan eficiente = info que
 NFL_KEY_MARGIN_WEIGHTS = {0: 0.1, 3: 2.6, 7: 1.75, 10: 1.2, 14: 1.3}
 NFL_KEY_NEIGHBOURS = (-2, -1, 1, 2)  # ningún vecino es otro número clave
 NFL_PMF_SPAN_SD = 6  # la distribución del margen se corta a ±6 SD
-SIDE_MARKETS = ("moneyline", "spread")  # apuestas a un equipo, correlacionadas entre sí
-
-
-# ── Cuotas ────────────────────────────────────────────────────────
-
-def american_to_decimal(raw) -> float | None:
-    """'-110' → 1.909, '+140' → 2.4, 'EVEN' → 2.0. None si no es válida."""
-    if raw is None:
-        return None
-    text = str(raw).strip().upper()
-    if text in ("EVEN", "EV"):
-        return 2.0
-    try:
-        value = float(text)
-    except ValueError:
-        return None
-    if value >= 100:
-        return round(1 + value / 100, 3)
-    if value <= -100:
-        return round(1 + 100 / abs(value), 3)
-    return None
-
-
-def no_vig_pair(odds_a: float, odds_b: float) -> tuple[float, float]:
-    """Probabilidades implícitas de dos lados quitando el margen de la casa."""
-    imp_a, imp_b = 1 / odds_a, 1 / odds_b
-    total = imp_a + imp_b
-    return imp_a / total, imp_b / total
 
 
 # ── Ratings y proyección ──────────────────────────────────────────
@@ -119,27 +105,11 @@ def project_game(home: dict, away: dict, league_avg: float,
 
 # ── Probabilidades ────────────────────────────────────────────────
 
-def _normal_cdf(x: float) -> float:
-    return 0.5 * (1 + math.erf(x / math.sqrt(2)))
-
-
 def win_prob(margin: float, sd: float = NFL_MARGIN_SD) -> float:
     """P(local gana) dado el margen proyectado (local - visitante)."""
     return _normal_cdf(margin / sd)
 
 
-def _outcomes(expected: float, threshold: float, sd: float) -> tuple[float, float, float]:
-    """
-    (P(x > threshold), P(x == threshold), P(x < threshold)) para un resultado
-    entero x ~ Normal(expected, sd). Líneas .5 no tienen push; las enteras
-    usan corrección de continuidad (±0.5) para la masa del empate.
-    """
-    if not float(threshold).is_integer():
-        below = _normal_cdf((threshold - expected) / sd)
-        return 1 - below, 0.0, below
-    upper = _normal_cdf((threshold + 0.5 - expected) / sd)
-    lower = _normal_cdf((threshold - 0.5 - expected) / sd)
-    return 1 - upper, upper - lower, lower
 
 
 def _reweight_key(pmf: dict[int, float], key: int, weight: float) -> dict[int, float]:
@@ -215,25 +185,13 @@ def _model_weight(data_quality: str) -> float:
 
 # ── Picks ─────────────────────────────────────────────────────────
 
-def _push_txt(push: float) -> str:
-    return f" (push {push:.0%})" if push >= 0.005 else ""
-
-
 def _pct(prob: float) -> str:
     """Mismo número que la barra de confianza (truncado y con techo)."""
     return f"{int(min(prob, NFL_MAX_PROB) * 100)}%"
 
 
-def _fmt_line(line: float) -> str:
-    return "PK" if line == 0 else f"{line:+.1f}"
 
 
-def _expected_value(prob: float, odds: float, push: float) -> float:
-    """
-    EV por unidad. prob = P(ganar | no push); con push se devuelve la apuesta.
-    Sin push equivale a config.edge().
-    """
-    return round(prob * (1 - push) * odds + push - 1, 4)
 
 
 def _build_pick(market_name: str, side: str, pick_type: str, prob: float, odds: float,
@@ -255,14 +213,8 @@ def _build_pick(market_name: str, side: str, pick_type: str, prob: float, odds: 
     }
 
 
-def _best_value(*picks: dict) -> dict:
-    """De los dos lados de un mercado, el de mayor EV (no el más probable)."""
-    return max(picks, key=lambda p: p["value"])
 
 
-def _sources_txt(model_p: float, market_p: float) -> str:
-    """'Modelo 55% · mercado 34% → ': de dónde sale la probabilidad final (la mezcla)."""
-    return f"Modelo {int(model_p * 100)}% · mercado {int(market_p * 100)}% → "
 
 
 def _two_sides(model_p: float, market_p: float, dq: str) -> tuple[tuple, tuple]:
@@ -345,16 +297,6 @@ def _qualifies(pick: dict, min_conf: int, value_threshold: float) -> bool:
     return pick["confidence"] >= min_conf or pick["value"] >= value_threshold
 
 
-def _drop_correlated(picks: list[dict]) -> list[dict]:
-    """
-    Una sola apuesta de lado por partido, la de más value: moneyline y spread del
-    mismo equipo son casi la misma apuesta, y de equipos opuestos son una cobertura.
-    """
-    side_bets = [p for p in picks if p["market"] in SIDE_MARKETS]
-    if not side_bets:
-        return picks
-    best = _best_value(*side_bets)
-    return [p for p in picks if p["market"] not in SIDE_MARKETS or p is best]
 
 
 def _data_quality(home_rating: dict, away_rating: dict) -> str:
