@@ -98,3 +98,10 @@ def test_weekly_report_labels_summary_as_current_model():
 def test_weekly_report_without_current_model_data_says_so():
     msg = ts.build_weekly_report({"error": "sin datos resueltos"}, [], [])
     assert "modelo actual" in msg
+
+
+def test_nba_finals_header_uses_the_current_year():
+    from datetime import datetime
+    finals = {**_nfl_pick(), "sport": "nba", "league": "NBA Finals", "flag": "🏆", "is_finals": True}
+    msg = ts.build_message([], [finals], [])
+    assert f"NBA FINALS {datetime.now().year}" in msg

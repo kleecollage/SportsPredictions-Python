@@ -25,6 +25,26 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 
+PICK_SOURCES = {"football": get_football_picks, "nba": get_nba_picks, "nfl": get_nfl_picks}
+
+
+def _safe_picks(sport: str) -> list:
+    """Picks de un deporte; si revienta se loguea y se envían los demás."""
+    try:
+        return PICK_SOURCES[sport]()
+    except Exception:
+        log.exception("Picks %s fallaron → se envía el mensaje sin ese deporte", sport)
+        return []
+
+
+async def _collect_picks() -> dict[str, list]:
+    """Picks de los deportes activos en paralelo; {deporte: [...]} con [] para los apagados."""
+    loop = asyncio.get_running_loop()
+    active = [sport for sport in PICK_SOURCES if SPORTS_ENABLED.get(sport)]
+    results = await asyncio.gather(*(loop.run_in_executor(None, _safe_picks, s) for s in active))
+    return {sport: [] for sport in PICK_SOURCES} | dict(zip(active, results))
+
+
 def _current_scope() -> dict:
     """Filtro de rendimiento: deportes activos y picks de su modelo vigente (MODEL_SINCE)."""
     return {"sports": [sport for sport, on in SPORTS_ENABLED.items() if on], "model_since": MODEL_SINCE}
@@ -59,19 +79,13 @@ async def main() -> None:
     init_db()
     _resolve_results()
 
-    # Capa 4: Playwright scrapers antes de generar picks (solo cubre fútbol/NBA)
-    if SPORTS_ENABLED.get("football") or SPORTS_ENABLED.get("nba"):
-        await run_playwright_scrapers()
+    # Capa 4 fútbol: Playwright antes de generar picks. La de NBA se abre bajo demanda
+    # dentro de get_nba_games, solo si ESPN / api-sports / BBC no dieron juegos.
+    if SPORTS_ENABLED.get("football"):
+        await run_playwright_scrapers(nba=False, football=True)
 
-    async def _empty():
-        return []
-
-    loop = asyncio.get_event_loop()
-    football_picks, nba_picks, nfl_picks = await asyncio.gather(
-        loop.run_in_executor(None, get_football_picks) if SPORTS_ENABLED.get("football") else _empty(),
-        loop.run_in_executor(None, get_nba_picks)      if SPORTS_ENABLED.get("nba")      else _empty(),
-        loop.run_in_executor(None, get_nfl_picks)      if SPORTS_ENABLED.get("nfl")      else _empty(),
-    )
+    picks = await _collect_picks()
+    football_picks, nba_picks, nfl_picks = picks["football"], picks["nba"], picks["nfl"]
 
     all_picks = football_picks + nba_picks + nfl_picks
     parlays   = build_parlays(all_picks)

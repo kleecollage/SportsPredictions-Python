@@ -44,7 +44,7 @@ ESPN_NFL_TEAMS_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl
 # ── Sports toggles ────────────────────────────────────────────────
 SPORTS_ENABLED = {
     "football": False,
-    "nba":      False,
+    "nba":      True,
     "nfl":      True,
 }
 
@@ -53,6 +53,7 @@ SPORTS_ENABLED = {
 # anteriores miden algo que ya no está en producción. Actualizar al recalibrar.
 MODEL_SINCE = {
     "nfl": "2026-10-19",  # recalibración por backtest (peso 0.15, totales apagados)
+    "nba": "2026-10-29",  # stats por ID de equipo y por juego; sin picks sin stats
 }
 
 # ── Thresholds ────────────────────────────────────────────────────
@@ -73,6 +74,7 @@ PLAYWRIGHT_TIMEOUT = 30_000  # ms
 NBA_SEASON_START_MONTH  = 10   # la NBA arranca en octubre
 EURO_SEASON_START_MONTH = 7    # ligas europeas / Liga MX arrancan en julio-agosto
 NBA_MIN_GAMES           = 5    # menos juegos = muestra no fiable → temporada anterior
+NBA_API_TIMEOUT         = 10   # s por request a stats.nba.com (el default de nba_api es 30)
 NFL_SEASON_START_MONTH  = 9    # la temporada regular NFL arranca en septiembre
 NFL_MIN_GAMES           = 2    # el rating NFL ya regresa a la media; 2 juegos bastan
 

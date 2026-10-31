@@ -24,6 +24,11 @@ def espn_nba_games(date_str):
     return data.get("events", [])
 
 
+def _is_nba_finals(headline: str) -> bool:
+    """Solo las Finales de la NBA; "East Finals" o "Conference Finals" no lo son."""
+    return "nba finals" in (headline or "").lower()
+
+
 def espn_parse_nba(event):
     comps = event.get("competitions", [])
     if not comps:
@@ -44,7 +49,7 @@ def espn_parse_nba(event):
 
     notes      = comp.get("notes", [])
     series_txt = notes[0].get("headline", "") if notes else ""
-    is_finals  = "Finals" in series_txt or "final" in series_txt.lower()
+    is_finals  = _is_nba_finals(series_txt)
 
     return {
         "home":           home.get("team", {}).get("displayName", "?"),

@@ -152,6 +152,22 @@ def already_sent_today(home: str, away: str, pick_type: str, run_date: str) -> b
     return row is not None
 
 
+def already_sent_for_game(sport: str, home: str, away: str, game_date: str, pick_type: str) -> bool:
+    """
+    True si este pick (partido + tipo) ya se envió para el juego de game_date en
+    cualquier corrida: el runner es intermitente y una corrida puede adelantar
+    los juegos de mañana, así que no se compara contra run_date.
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute("""
+            SELECT 1 FROM picks
+            WHERE sport = ? AND home = ? AND away = ? AND pick_type = ?
+              AND json_extract(payload, '$.date') = ?
+            LIMIT 1
+        """, (sport, home, away, pick_type, game_date)).fetchone()
+    return row is not None
+
+
 def already_sent_for_event(event_id: str, market: str) -> bool:
     """
     True si ya se envió un pick NFL de ese mercado para ese partido, en cualquier

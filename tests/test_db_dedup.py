@@ -47,3 +47,18 @@ def test_picks_from_other_sports_do_not_interfere(temp_db):
     db.save_picks("2026-10-16", [_pick(sport="nba")])
     assert _check() is False
 
+
+
+# ── NBA: dedup por partido y fecha del juego, no por run_date (code review M6) ─
+
+def test_nba_pick_sent_on_an_earlier_run_is_detected_by_game_date(temp_db):
+    pick = {"sport": "nba", "league": "NBA", "home": "Boston Celtics", "away": "Chicago Bulls",
+            "type": "Over 221.5 Puntos", "confidence": 64, "est_odds": 1.8, "our_prob": 0.64,
+            "data_quality": "high", "date": "2026-10-31"}
+    db.save_picks("2026-10-30", [pick])   # corrida del jueves para el juego del viernes
+    assert db.already_sent_for_game("nba", "Boston Celtics", "Chicago Bulls",
+                                    "2026-10-31", "Over 221.5 Puntos") is True
+    assert db.already_sent_for_game("nba", "Boston Celtics", "Chicago Bulls",
+                                    "2026-11-02", "Over 221.5 Puntos") is False
+    assert db.already_sent_for_game("nba", "Boston Celtics", "Chicago Bulls",
+                                    "2026-10-31", "Under 221.5 Puntos") is False

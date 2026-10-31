@@ -137,11 +137,13 @@ async def scrape_flashscore_football() -> list:
         return []
 
 
-async def run_playwright_scrapers() -> None:
+async def run_playwright_scrapers(nba: bool = True, football: bool = True) -> None:
     """
-    Ejecuta NBA + Football con un único browser compartido en paralelo.
+    Ejecuta los scrapers pedidos (NBA y/o fútbol) con un único browser compartido.
     Popula store.pw_nba_games y store.pw_football_fixtures.
     """
+    if not (nba or football):
+        return
     if not (PLAYWRIGHT_OK and PLAYWRIGHT_ENABLED):
         log.info("Playwright: no disponible/desactivado → Capa 4 saltada")
         return
@@ -155,24 +157,21 @@ async def run_playwright_scrapers() -> None:
     try:
         async with async_playwright() as p:
             browser, context = await _build_stealth_browser(p)
+            jobs = {"NBA": _scrape_nba_with_context, "Football": _scrape_football_with_context}
+            wanted = [name for name, on in (("NBA", nba), ("Football", football)) if on]
             try:
-                nba_res, football_res = await asyncio.gather(
-                    _scrape_nba_with_context(context),
-                    _scrape_football_with_context(context),
-                    return_exceptions=True,
-                )
+                results = await asyncio.gather(*(jobs[name](context) for name in wanted),
+                                               return_exceptions=True)
             finally:
                 await browser.close()
 
-        if isinstance(nba_res, list):
-            store.pw_nba_games = nba_res
-        else:
-            log.warning("Playwright NBA falló: %s", nba_res)
-
-        if isinstance(football_res, list):
-            store.pw_football_fixtures = football_res
-        else:
-            log.warning("Playwright Football falló: %s", football_res)
+        for name, res in zip(wanted, results):
+            if not isinstance(res, list):
+                log.warning("Playwright %s falló: %s", name, res)
+            elif name == "NBA":
+                store.pw_nba_games = res
+            else:
+                store.pw_football_fixtures = res
 
         log.info("Playwright completo → NBA:%d Fútbol:%d",
                  len(store.pw_nba_games), len(store.pw_football_fixtures))

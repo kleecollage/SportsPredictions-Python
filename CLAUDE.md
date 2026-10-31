@@ -21,9 +21,9 @@ Analista senior de apuestas multi-deporte. Genera picks + parlays diarios y los 
 |---|---|---|
 | 🏈 NFL | ✅ activo | ESPN hidden API (juegos, líneas DraftKings, marcadores) — sin key |
 | ⚽ Fútbol | ⛔ desactivado | football-data.org → api-football → The Odds API → Playwright Flashscore |
-| 🏀 NBA | ⛔ desactivado | nba_api → api-sports → ESPN → BBC → Playwright Flashscore |
+| 🏀 NBA | ✅ activo (29-oct-2026, sin backtest) | nba_api → api-sports → ESPN → BBC → Playwright Flashscore |
 
-Sin deportes activos, `main()` sale sin scrapear ni enviar (y sin resolver resultados). Playwright solo corre si fútbol o NBA están activos.
+Sin deportes activos, `main()` sale sin scrapear ni enviar (y sin resolver resultados). Playwright de fútbol corre antes de los picks si fútbol está activo; el de NBA (Flashscore) se abre bajo demanda en `get_nba_games` solo si ESPN, api-sports y BBC no dieron juegos. Cada deporte corre aislado (`main._collect_picks` / `_safe_picks`): si uno revienta se loguea y el mensaje sale con los demás.
 
 ## Temporadas (calculadas por fecha en cada llamada, `config.py`)
 - `nba_season()` / `nba_api_season()`: arranca en octubre. Fuera de abril–junio se usan stats de **temporada regular**, nunca Playoffs viejos; si un equipo tiene < `NBA_MIN_GAMES` (5) se usa la regular anterior.
@@ -55,8 +55,17 @@ Sin deportes activos, `main()` sale sin scrapear ni enviar (y sin resolver resul
 - Máx 3 picks/partido; value bet = edge ≥ 0.04 con cuota real (The Odds API).
 - football-data.org free: solo PL, PD, BL1, SA, FL1, CL, WC, BSA, PPL (MLS/Liga MX → 403); 10 req/min (sleep 7 s). api-football: header `x-apisports-key`, 100 req/día.
 
-## NBA
+## NBA (`sports/nba.py`, `analyze_nba_game` en `analysis/picks.py`)
 - Over/Under por proyección con splits home/away; Moneyline con diff ≥ 15; Spread con diff ≥ 18; H2H solo en Playoffs/Finals.
+- **Equipos por ID de nba_api**, solo con coincidencia exacta (nombre completo, apodo o `_TEAM_ALIASES`, p. ej. "LA Clippers"). Nunca por parecido: el fuzzy viejo daba a 11/30 equipos stats de otro ("la" ⊂ "Atlanta", "nets" ⊂ "Hornets"). LeagueDash se indexa por `TEAM_ID`.
+- nba_api 1.11: el parámetro es `per_mode_detailed="PerGame"` (`per_mode_simple` no existe y devolvía totales). Filas con < `NBA_MIN_GAMES` o ppg fuera de 85–140 se descartan.
+- Sin LeagueDash de un equipo (ni actual ni anterior) → sin stats → **sin picks** de ese juego (ya no se inventan `opp_ppg` 115 ni picks genéricos "Over 215.5").
+- `NBA_API_TIMEOUT` = 10 s por request; el primer fallo de red pone `store.nba_api_down` y se deja de llamar a nba_api en esa corrida. Una respuesta con esquema inesperado (columna faltante) se loguea y se trata como sin datos (`_PARSE_ERRORS`), nunca sube.
+- Splits home/away solo si son de la **misma temporada** que las stats base del equipo (`season` en ambos); al inicio de temporada los splits caen a la anterior y no deben pisar los promedios actuales. `nba_get_home_away_splits(..., season=)` solo pide esa temporada.
+- Fuentes de juegos en funciones separadas (`_api_sports_games`, `_with_espn`, `_bbc_games`, `_flashscore_games`). Flashscore (fuente 4) solo acepta items con hora `HH:MM`: su página mezcla resultados y próximos días, y desde oct-2026 `.event__time` viene vacío (34/34 items sin hora) → hoy la fuente 4 no aporta juegos hasta reparar el selector.
+- Unión de fuentes: un juego de ESPN se une a uno de api-sports solo si coinciden local **y** visitante (`_same_matchup`). `is_finals` solo sale del headline ESPN "NBA Finals" (`espn._is_nba_finals`), nunca por el mes.
+- Dedup: mismo pick (local, visitante, tipo) para la misma fecha de juego (`payload.date`) en cualquier corrida (`db.already_sent_for_game`).
+- Picks NBA sin cuota real (`est_odds` estimada, `value` None) y modelo sin backtest: tratar su ROI con cautela.
 
 ## Parlays (`analysis/parlays.py`)
 Piernas con conf ≥ 68 (fútbol) / ≥ 62 (NBA); doble ≥ 38 %, triple ≥ 27 %; ligas distintas. Picks NFL de value (< 68 %) no entran.

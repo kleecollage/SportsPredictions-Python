@@ -13,10 +13,12 @@ from value_bot.sports.football import collect_football_fixtures, build_football_
 
 try:
     from value_bot.db import already_sent_today as _already_sent, get_calibration_factors as _get_cal
+    from value_bot.db import already_sent_for_game as _already_sent_for_game
     _DB_DEDUP = True
 except ImportError:
     _DB_DEDUP = False
     def _already_sent(*_): return False
+    def _already_sent_for_game(*_): return False
     def _get_cal(*_): return {}
 
 
@@ -74,8 +76,6 @@ def analyze_nba_game(game):
 
     is_finals  = game.get("is_finals", False)
     series_txt = game.get("series_summary", "")
-    h_rec      = game.get("home_record", "?")
-    a_rec      = game.get("away_record", "?")
     ctx        = (f" [{series_txt}]" if series_txt
                   else (" [NBA Finals]" if is_finals else ""))
 
@@ -97,8 +97,7 @@ def analyze_nba_game(game):
         a_opp_eff = a_split.get("opp_ppg", a_stats["opp_ppg"])
 
         # Guardamos también los valores globales para reasoning
-        h_ppg = h_stats["ppg"]; h_opp = h_stats["opp_ppg"]
-        a_ppg = a_stats["ppg"]; a_opp = a_stats["opp_ppg"]
+        h_ppg = h_stats["ppg"]
 
         using_splits = bool(h_split and a_split)
         projected = (h_ppg_eff + a_opp_eff + a_ppg_eff + h_opp_eff) / 2
@@ -289,32 +288,8 @@ def analyze_nba_game(game):
                 })
 
     else:
-        base_line = 215.5
-        picks.append({
-            "type": f"Over {base_line} Puntos",
-            "confidence": 63, "our_prob": 0.63,
-            "est_odds": 1.87, "value": None,
-            "reasoning": (f"{game['home']} ({h_rec}) vs {game['away']} ({a_rec}). "
-                          f"Promedio NBA ≥ 215pts{ctx}"),
-            "data_quality": "low",
-        })
-        picks.append({
-            "type": f"1ª Mitad Over {round(base_line * 0.49, 1)}",
-            "confidence": 62, "our_prob": 0.62,
-            "est_odds": 1.85, "value": None,
-            "reasoning": (f"Ritmo elevado esperado. "
-                          f"~{base_line * 0.49:.0f}pts en 1ª mitad{ctx}"),
-            "data_quality": "low",
-        })
-        if is_finals:
-            picks.append({
-                "type": f"Victoria {game['home']}",
-                "confidence": 63, "our_prob": 0.63,
-                "est_odds": est_odds(0.63), "value": None,
-                "reasoning": (f"Ventaja de local en NBA Finals histórica (~58%). "
-                              f"{game['home']} ({h_rec}){ctx}"),
-                "data_quality": "low",
-            })
+        # Sin stats de los dos equipos no hay proyección: no se inventan picks genéricos.
+        log.info("NBA %s vs %s: sin stats de ambos equipos → sin picks", game["home"], game["away"])
 
     # Filtrar por confianza mínima Y por cuota mínima apostable
     # Cuota ≤ 1.30 significa que la casa ya descuenta ~77%+ → sin edge real
@@ -349,16 +324,15 @@ def get_nba_picks():
         reverse=True,
     )
 
-    # Dedup contra BD: filtrar picks ya enviados hoy
+    # Dedup contra BD: mismo pick para el mismo juego en cualquier corrida previa
     if _DB_DEDUP:
-        today = datetime.now().strftime("%Y-%m-%d")
         before = len(all_picks)
         all_picks = [
             p for p in all_picks
-            if not _already_sent(p["home"], p["away"], p["type"], today)
+            if not _already_sent_for_game("nba", p["home"], p["away"], p.get("date", ""), p["type"])
         ]
         if before != len(all_picks):
-            log.info("NBA dedup BD: %d picks ya enviados hoy filtrados", before - len(all_picks))
+            log.info("NBA dedup BD: %d picks ya enviados para esos juegos", before - len(all_picks))
 
     result = all_picks[:MAX_PICKS_SPORT]
     log.info("NBA picks: %d", len(result))

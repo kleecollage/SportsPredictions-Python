@@ -212,7 +212,7 @@ def build_message(fp, np, parlays, upcoming=None, perf=None, nflp=None):
             if finals_picks:
                 lines += [
                     "━━━━━━━━━━━━━━━━━━━━━━",
-                    "🏆 <b>NBA FINALS 2026</b>",
+                    f"🏆 <b>NBA FINALS {datetime.now().year}</b>",
                     "━━━━━━━━━━━━━━━━━━━━━━",
                     "",
                 ]
