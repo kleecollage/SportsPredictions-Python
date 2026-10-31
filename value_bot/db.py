@@ -142,13 +142,19 @@ def save_picks(run_date: str, picks: list) -> int:
     return inserted
 
 
-def already_sent_today(home: str, away: str, pick_type: str, run_date: str) -> bool:
-    """True si ya se envió este pick exacto (partido + tipo) hoy."""
+def already_sent_for_game(sport: str, home: str, away: str, game_date: str, pick_type: str) -> bool:
+    """
+    True si este pick (partido + tipo) ya se envió para el juego de game_date en
+    cualquier corrida: el runner es intermitente y una corrida puede adelantar
+    los juegos de otro día, así que no se compara contra run_date.
+    """
     with sqlite3.connect(DB_PATH) as conn:
-        row = conn.execute(
-            "SELECT 1 FROM picks WHERE run_date=? AND home=? AND away=? AND pick_type=? LIMIT 1",
-            (run_date, home, away, pick_type),
-        ).fetchone()
+        row = conn.execute("""
+            SELECT 1 FROM picks
+            WHERE sport = ? AND home = ? AND away = ? AND pick_type = ?
+              AND json_extract(payload, '$.date') = ?
+            LIMIT 1
+        """, (sport, home, away, pick_type, game_date)).fetchone()
     return row is not None
 
 
@@ -400,57 +406,40 @@ def get_model_calibration(min_picks: int = 10, sports=None,
             for bucket, (total, wins) in sorted(buckets.items()) if total >= min_picks]
 
 
-def get_calibration_factors(min_picks_per_bucket: int = 15) -> dict:
-    """
-    Retorna {conf_bucket: factor} donde factor = actual_win_rate / predicted.
-    Solo buckets con >= min_picks_per_bucket picks resueltos.
-    Ejemplo: {65: 0.88, 70: 0.92, 75: 1.03}
-    Con pocos datos (<50 picks resueltos) retorna {} para no ajustar.
-    """
-    if _PANDAS_OK:
-        df = load_picks_df(90)
-        if df is None or df.empty or "outcome" not in df.columns:
-            return {}
-        df = df[df["outcome"].isin(["win", "loss"])].copy()
-        if len(df) < 50:
-            log.debug("get_calibration_factors: solo %d picks resueltos — sin ajuste", len(df))
-            return {}
-        df["bucket"] = (df["confidence"] // 5) * 5
-        grouped = df.groupby("bucket").agg(
-            total=("outcome", "count"),
-            actual_wr=("outcome", lambda x: (x == "win").mean() * 100),
-        )
-        factors = {}
-        for bucket, row in grouped.iterrows():
-            if row["total"] >= min_picks_per_bucket:
-                predicted = int(bucket) + 2
-                factors[int(bucket)] = round(float(row["actual_wr"]) / predicted, 3)
-        return factors
+CALIBRATION_MIN_RESOLVED = 50   # con menos picks resueltos no se ajusta nada
+CALIBRATION_LOOKBACK_DAYS = 90
 
-    # Fallback SQL
+
+def get_calibration_factors(sport: str, model_since: str | None = None,
+                            min_picks_per_bucket: int = 15) -> dict:
+    """
+    {conf_bucket: factor} con factor = win rate real / predicho, solo con picks
+    resueltos de `sport` y del modelo vigente (run_date ≥ model_since): mezclar
+    deportes o modelos viejos calibraría un modelo con el historial de otro.
+    Solo buckets con >= min_picks_per_bucket picks; {} con < CALIBRATION_MIN_RESOLVED.
+    Ejemplo: {65: 0.88, 70: 0.92, 75: 1.03}
+    """
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute("""
-            SELECT
-                CAST(p.confidence / 5 AS INT) * 5 AS bucket,
-                COUNT(*) AS total,
-                AVG(CASE WHEN r.outcome='win' THEN 100.0 ELSE 0.0 END) AS actual_wr
+            SELECT CAST(p.confidence / 5 AS INT) * 5 AS bucket,
+                   COUNT(*) AS total,
+                   AVG(CASE WHEN r.outcome = 'win' THEN 100.0 ELSE 0.0 END) AS actual_wr
             FROM picks p
             JOIN results r ON r.pick_id = p.id
-            WHERE r.outcome IN ('win','loss')
+            WHERE r.outcome IN ('win', 'loss')
+              AND p.sport = ?
+              AND p.run_date >= ?
+              AND p.run_date >= date('now', ?)
             GROUP BY bucket
-        """).fetchall()
-        total_count = conn.execute(
-            "SELECT COUNT(*) FROM picks p JOIN results r ON r.pick_id=p.id WHERE r.outcome IN ('win','loss')"
-        ).fetchone()[0]
+        """, (sport, model_since or "", f"-{CALIBRATION_LOOKBACK_DAYS} days")).fetchall()
 
-    if total_count < 50:
+    if sum(total for _, total, _ in rows) < CALIBRATION_MIN_RESOLVED:
+        log.debug("get_calibration_factors(%s): pocos picks resueltos — sin ajuste", sport)
         return {}
-    factors = {}
-    for bucket, total, actual_wr in rows:
-        if total >= min_picks_per_bucket:
-            predicted = int(bucket) + 2
-            factors[int(bucket)] = round(float(actual_wr) / predicted, 3)
-    return factors
+    return {
+        int(bucket): round(float(actual_wr) / (int(bucket) + 2), 3)
+        for bucket, total, actual_wr in rows if total >= min_picks_per_bucket
+    }
 
 
 def get_recent_picks(days: int = 7, sports=None, model_since: dict | None = None) -> list[dict]:

@@ -1,33 +1,33 @@
-"""Pick generation for NBA and Football."""
+"""Picks de fútbol (Poisson). Los NBA viven en nba_picks / nba_model, los NFL en nfl_picks / nfl_model."""
 import math
 import logging
 from collections import defaultdict
-from datetime import datetime
 
-from value_bot.analysis.market import SIDE_MARKETS
-from value_bot.analysis.nba_model import analyze_nba_game as analyze_nba_market
 from value_bot.config import (
     MIN_CONFIDENCE, MAX_PICKS_SPORT, VALUE_THRESHOLD,
-    LEAGUE_AVERAGES, LEAGUE_AVG_DEFAULT, est_odds, edge, nba_api_season,
+    LEAGUE_AVERAGES, LEAGUE_AVG_DEFAULT, MODEL_SINCE, est_odds, edge,
 )
-from value_bot.sports.nba import get_nba_games, get_best_nba_stats
 from value_bot.sports.football import collect_football_fixtures, build_football_stats, get_real_odds
 
 log = logging.getLogger(__name__)
 
+FOOTBALL_MIN_ODDS = 1.30  # cuotas menores no dejan margen apostable
+
 try:
-    from value_bot.db import already_sent_today as _already_sent, get_calibration_factors as _get_cal
-    from value_bot.db import already_sent_for_event as _already_sent_for_event
+    from value_bot.db import already_sent_for_game as _already_sent_for_game
+    from value_bot.db import get_calibration_factors as _get_cal
     _DB_DEDUP = True
 except ImportError:
     _DB_DEDUP = False
-    def _already_sent(*_): return False
-    def _already_sent_for_event(*_, **__): return False
-    def _get_cal(*_): return {}
+    def _already_sent_for_game(*_): return False
+    def _get_cal(*_, **__): return {}
 
 
 def _apply_calibration(pick: dict, factors: dict) -> dict:
-    """Ajusta confidence y our_prob según historial real del modelo."""
+    """
+    Nuevo pick con confidence y our_prob ajustados al historial real del modelo.
+    Con cuota real se recalcula el value; con cuota estimada, la cuota (sale de la prob).
+    """
     if not factors:
         return pick
     bucket = (pick["confidence"] // 5) * 5
@@ -36,8 +36,11 @@ def _apply_calibration(pick: dict, factors: dict) -> dict:
         return pick
     new_conf = min(95, max(55, int(pick["confidence"] * factor)))
     new_prob = round(min(0.95, (pick.get("our_prob") or pick["confidence"] / 100) * factor), 3)
-    pick = {**pick, "confidence": new_conf, "our_prob": new_prob}
-    return pick
+    if pick.get("real_odds_source"):
+        priced = {"value": edge(new_prob, pick["est_odds"])}
+    else:
+        priced = {"est_odds": est_odds(new_prob)}
+    return {**pick, "confidence": new_conf, "our_prob": new_prob, **priced}
 
 
 def _form_emoji(form):
@@ -69,53 +72,6 @@ def _poisson_btts(exp_h: float, exp_a: float) -> float:
     return round(p_home_scores * p_away_scores, 4)
 
 
-# ── NBA picks ─────────────────────────────────────────────────────
-# Solo contra líneas reales de ESPN (nba_model). Sin calibración por historial:
-# la probabilidad ya está anclada al mercado y la cuota es real.
-
-def analyze_nba_game(game: dict) -> list[dict]:
-    """Picks de un juego; sin líneas de mercado ni stats de ambos equipos no hay picks."""
-    if not game.get("lines"):
-        log.info("NBA %s vs %s: sin líneas de mercado (ESPN) → sin picks", game["home"], game["away"])
-        return []
-    h_stats, a_stats, splits, _h2h = get_best_nba_stats(game)
-    if not (h_stats and a_stats):
-        log.info("NBA %s vs %s: sin stats de ambos equipos → sin picks", game["home"], game["away"])
-        return []
-    return analyze_nba_market(game, h_stats, a_stats, splits, nba_api_season(),
-                              min_conf=MIN_CONFIDENCE, value_threshold=VALUE_THRESHOLD)
-
-
-def _nba_already_sent(event_id: str | None, pick: dict) -> bool:
-    """Un pick por partido y mercado entre corridas; una sola apuesta de lado por partido."""
-    if not (_DB_DEDUP and event_id):
-        return False
-    markets = SIDE_MARKETS if pick["market"] in SIDE_MARKETS else (pick["market"],)
-    return any(_already_sent_for_event(event_id, market, sport="nba") for market in markets)
-
-
-def get_nba_picks() -> list[dict]:
-    all_picks = []
-    for game in get_nba_games():
-        for pick in analyze_nba_game(game):
-            if _nba_already_sent(game.get("event_id"), pick):
-                log.info("NBA dedup BD: %s ya enviado para %s vs %s", pick["market"], game["home"], game["away"])
-                continue
-            all_picks.append({
-                **game, **pick,
-                "sport":  "nba",
-                "flag":   "🏆" if game.get("is_finals") else "🏀",
-                "league": "NBA Finals" if game.get("is_finals") else "NBA",
-            })
-
-    # Value bets primero, luego por confianza
-    all_picks.sort(key=lambda p: ((p.get("value") or 0) >= VALUE_THRESHOLD, p["confidence"]),
-                   reverse=True)
-    result = all_picks[:MAX_PICKS_SPORT]
-    log.info("NBA picks: %d", len(result))
-    return result
-
-
 # ── Football picks ────────────────────────────────────────────────
 
 def analyze_football_match(fix, hs, as_):
@@ -126,141 +82,9 @@ def analyze_football_match(fix, hs, as_):
     lg_name = league or "Liga"
 
     if not hs or not as_:
-        o25  = la["over25_pct"]
-        u25  = la["under25_pct"]
-        btts = la["btts_pct"]
-        draw = la["draw_pct"]
-        lam  = la["avg_goals"]
-        league_picks = []
-
-        # Sin stats individuales: usar tasa histórica con descuento del 10%
-        # (confianza conservadora — coherente con data_quality "medium", cap 68%)
-        def _hist_conf(pct):
-            return min(68, int(pct * 0.90))
-
-        if style == "attacking":
-            conf = _hist_conf(o25)
-            if conf >= MIN_CONFIDENCE:
-                league_picks.append({
-                    "type": "Over 2.5 Goles",
-                    "confidence": conf,
-                    "our_prob": round(o25 / 100, 3),
-                    "est_odds": est_odds(o25 / 100),
-                    "value": None,
-                    "reasoning": (f"{fix['home']} vs {fix['away']} | "
-                                  f"{lg_name}: {o25}% Over 2.5 históricamente "
-                                  f"(media {lam:.2f} goles/j). Liga ofensiva, sin stats individuales."),
-                    "data_quality": "medium",
-                })
-            conf_b = _hist_conf(btts)
-            if conf_b >= MIN_CONFIDENCE:
-                league_picks.append({
-                    "type": "Ambos Marcan (BTTS)",
-                    "confidence": conf_b,
-                    "our_prob": round(btts / 100, 3),
-                    "est_odds": est_odds(btts / 100),
-                    "value": None,
-                    "reasoning": (f"{fix['home']} vs {fix['away']} | "
-                                  f"{lg_name}: {btts}% BTTS hist. "
-                                  f"Liga ofensiva — ambos equipos tienen vocación goleadora."),
-                    "data_quality": "medium",
-                })
-
-        elif style == "defensive":
-            conf = _hist_conf(u25)
-            if conf >= MIN_CONFIDENCE:
-                league_picks.append({
-                    "type": "Under 2.5 Goles",
-                    "confidence": conf,
-                    "our_prob": round(u25 / 100, 3),
-                    "est_odds": est_odds(u25 / 100),
-                    "value": None,
-                    "reasoning": (f"{fix['home']} vs {fix['away']} | "
-                                  f"{lg_name}: {u25}% Under 2.5 hist. "
-                                  f"(media {lam:.2f} goles/j). Partido táctico esperado."),
-                    "data_quality": "medium",
-                })
-            conf_x = _hist_conf(draw)
-            if conf_x >= MIN_CONFIDENCE:
-                league_picks.append({
-                    "type": "Empate (X)",
-                    "confidence": conf_x,
-                    "our_prob": round(draw / 100, 3),
-                    "est_odds": est_odds(draw / 100),
-                    "value": None,
-                    "reasoning": (f"{fix['home']} vs {fix['away']} | "
-                                  f"{lg_name}: {draw}% empates hist. "
-                                  f"Equipos de nivel similar en liga táctica."),
-                    "data_quality": "medium",
-                })
-
-        elif style == "technical":
-            conf = _hist_conf(o25)
-            if conf >= MIN_CONFIDENCE:
-                league_picks.append({
-                    "type": "Over 2.5 Goles",
-                    "confidence": conf,
-                    "our_prob": round(o25 / 100, 3),
-                    "est_odds": est_odds(o25 / 100),
-                    "value": None,
-                    "reasoning": (f"{lg_name}: {o25}% histórico Over 2.5, media {lam:.2f} goles/j. "
-                                  f"Liga técnica — partidos abiertos son comunes."),
-                    "data_quality": "medium",
-                })
-            hw = la["home_win_pct"]
-            dc_prob = round(min(0.68, (hw + draw) / 100), 3)
-            conf_dc = _hist_conf(hw + draw)
-            if conf_dc >= MIN_CONFIDENCE:
-                league_picks.append({
-                    "type": "Doble Chance Local (1X)",
-                    "confidence": conf_dc,
-                    "our_prob": dc_prob,
-                    "est_odds": est_odds(dc_prob * 0.72),
-                    "value": None,
-                    "reasoning": (f"{lg_name}: {hw}% victorias local + {draw}% empates histórico. "
-                                  f"1X cubre ambos resultados favorables al local."),
-                    "data_quality": "medium",
-                })
-
-        else:  # balanced
-            conf = _hist_conf(o25)
-            if conf >= MIN_CONFIDENCE:
-                league_picks.append({
-                    "type": "Over 2.5 Goles",
-                    "confidence": conf,
-                    "our_prob": round(o25 / 100, 3),
-                    "est_odds": est_odds(o25 / 100),
-                    "value": None,
-                    "reasoning": (f"{lg_name}: {o25}% histórico Over 2.5 "
-                                  f"(media {lam:.2f} goles/j). Liga equilibrada."),
-                    "data_quality": "medium",
-                })
-            conf_b = _hist_conf(btts)
-            if conf_b >= MIN_CONFIDENCE:
-                league_picks.append({
-                    "type": "Ambos Marcan (BTTS)",
-                    "confidence": conf_b,
-                    "our_prob": round(btts / 100, 3),
-                    "est_odds": est_odds(btts / 100),
-                    "value": None,
-                    "reasoning": (f"{lg_name}: {btts}% de partidos con BTTS históricamente. "
-                                  f"Liga equilibrada con presión ofensiva de ambos lados."),
-                    "data_quality": "medium",
-                })
-
-        league_picks = [p for p in league_picks if p["confidence"] >= MIN_CONFIDENCE]
-        if not league_picks:
-            league_picks.append({
-                "type": "Over 1.5 Goles",
-                "confidence": 63,
-                "our_prob": 0.68,
-                "est_odds": est_odds(0.68),
-                "value": None,
-                "reasoning": (f"{lg_name}: {lam:.2f} goles/j promedio — pick conservador "
-                              f"sin stats individuales disponibles."),
-                "data_quality": "low",
-            })
-        return league_picks[:3]
+        # Sin stats de los dos equipos no hay proyección: no se inventan picks con promedios de liga.
+        log.info("Fútbol %s vs %s: sin stats de ambos equipos → sin picks", fix["home"], fix["away"])
+        return []
 
     # With individual stats: real Poisson
     gf_h = hs.get("goals_for_pg", 0)
@@ -447,13 +271,18 @@ def analyze_football_match(fix, hs, as_):
             "data_quality": "medium",
         })
 
-    MIN_ODDS = 1.30
     picks = [
         p for p in picks
-        if p["confidence"] >= MIN_CONFIDENCE and p.get("est_odds", 0) > MIN_ODDS
+        if p["confidence"] >= MIN_CONFIDENCE and p.get("est_odds", 0) > FOOTBALL_MIN_ODDS
     ]
     picks.sort(key=lambda x: (x["confidence"], x.get("value") or -99), reverse=True)
     return picks[:3]
+
+
+def _football_already_sent(pick: dict) -> bool:
+    """Mismo pick para el mismo partido (fecha del juego) en cualquier corrida previa."""
+    return _DB_DEDUP and _already_sent_for_game("football", pick["home"], pick["away"],
+                                                pick.get("date", ""), pick["type"])
 
 
 def get_football_picks():
@@ -461,7 +290,7 @@ def get_football_picks():
     fixtures    = collect_football_fixtures()
     stats       = build_football_stats(fixtures)
     all_picks   = []
-    cal_factors = _get_cal() if _DB_DEDUP else {}
+    cal_factors = _get_cal("football", MODEL_SINCE.get("football")) if _DB_DEDUP else {}
     for fix in fixtures:
         analysis = analyze_football_match(fix, stats.get(fix["home"]), stats.get(fix["away"]))
         for pick in analysis:
@@ -469,7 +298,12 @@ def get_football_picks():
             if pick["confidence"] >= MIN_CONFIDENCE:
                 all_picks.append({**fix, **pick})
 
-    all_picks.sort(
+    # Dedup contra BD antes del tope: un pick ya enviado no debe quitarle el lugar a otro
+    fresh = [p for p in all_picks if not _football_already_sent(p)]
+    if len(fresh) != len(all_picks):
+        log.info("Football dedup BD: %d picks ya enviados para esos partidos", len(all_picks) - len(fresh))
+
+    fresh.sort(
         key=lambda x: (
             1 if (x.get("value") and x["value"] >= VALUE_THRESHOLD) else 0,
             x["confidence"],
@@ -479,24 +313,12 @@ def get_football_picks():
 
     lg_type_count: dict = defaultdict(int)
     deduped = []
-    for p in all_picks:
+    for p in fresh:
         key = (p.get("league", ""), p.get("type", ""))
         if lg_type_count[key] < 2:
             deduped.append(p)
             lg_type_count[key] += 1
 
     deduped = deduped[:MAX_PICKS_SPORT]
-
-    # Dedup contra BD: filtrar picks ya enviados hoy
-    if _DB_DEDUP:
-        today = datetime.now().strftime("%Y-%m-%d")
-        before = len(deduped)
-        deduped = [
-            p for p in deduped
-            if not _already_sent(p["home"], p["away"], p["type"], today)
-        ]
-        if before != len(deduped):
-            log.info("Football dedup BD: %d picks ya enviados hoy filtrados", before - len(deduped))
-
     log.info("Football picks: %d (de %d fixtures, %d candidatos)", len(deduped), len(fixtures), len(all_picks))
     return deduped

@@ -3,7 +3,7 @@ import pytest
 
 from value_bot import db
 from value_bot.analysis import nba_model
-from value_bot.analysis import picks as picks_mod
+from value_bot.analysis import nba_picks
 from value_bot.analysis.market import no_vig_pair, normal_cdf
 from value_bot.analysis.nba_model import (
     NBA_HFA, NBA_MARGIN_SD, NBA_MODEL_WEIGHT, NBA_MODEL_WEIGHT_MEDIUM_DQ,
@@ -155,8 +155,8 @@ def test_espn_nba_event_carries_event_id_and_lines():
 def test_game_without_lines_skips_stats_requests(monkeypatch):
     def boom(_):
         raise AssertionError("no debe pedir stats sin líneas")
-    monkeypatch.setattr(picks_mod, "get_best_nba_stats", boom)
-    assert picks_mod.analyze_nba_game({**GAME, "lines": {}}) == []
+    monkeypatch.setattr(nba_picks, "get_best_nba_stats", boom)
+    assert nba_picks.analyze_nba_game({**GAME, "lines": {}}) == []
 
 
 @pytest.fixture
@@ -178,22 +178,22 @@ def test_event_dedup_is_per_sport(temp_db):
 
 
 def _patch_slate(monkeypatch, pick):
-    monkeypatch.setattr(picks_mod, "get_nba_games", lambda: [GAME])
-    monkeypatch.setattr(picks_mod, "get_best_nba_stats", lambda g: (_stats(1, 1), _stats(1, 1), {}, {}))
-    monkeypatch.setattr(picks_mod, "analyze_nba_market", lambda *a, **k: [pick])
+    monkeypatch.setattr(nba_picks, "get_nba_games", lambda: [GAME])
+    monkeypatch.setattr(nba_picks, "get_best_nba_stats", lambda g: (_stats(1, 1), _stats(1, 1), {}, {}))
+    monkeypatch.setattr(nba_picks, "analyze_nba_market", lambda *a, **k: [pick])
 
 
 def test_side_bet_already_sent_blocks_the_other_side_market(temp_db, monkeypatch):
     db.save_picks("2026-10-30", [_sent("spread")])
     _patch_slate(monkeypatch, {"market": "moneyline", "side": GAME["home"], "type": "Victoria Charlotte Hornets",
                                "confidence": 55, "value": 0.05, "est_odds": 2.1})
-    assert picks_mod.get_nba_picks() == []
+    assert nba_picks.get_nba_picks() == []
 
 
 def test_total_is_independent_of_side_bets(temp_db, monkeypatch):
     db.save_picks("2026-10-30", [_sent("spread")])
     _patch_slate(monkeypatch, {"market": "total", "side": "Over", "type": "Over 211.5 Puntos",
                                "confidence": 55, "value": 0.05, "est_odds": 1.87})
-    picks = picks_mod.get_nba_picks()
+    picks = nba_picks.get_nba_picks()
     assert [p["type"] for p in picks] == ["Over 211.5 Puntos"]
     assert picks[0]["sport"] == "nba" and picks[0]["event_id"] == "401"

@@ -8,7 +8,8 @@ from datetime import datetime
 from value_bot.config import MODEL_SINCE, SPORTS_ENABLED
 from value_bot.scrapers.playwright_scraper import PLAYWRIGHT_OK
 from value_bot.scrapers.flashscore import run_playwright_scrapers
-from value_bot.analysis.picks import get_football_picks, get_nba_picks
+from value_bot.analysis.picks import get_football_picks
+from value_bot.analysis.nba_picks import get_nba_picks
 from value_bot.analysis.nfl_picks import get_nfl_picks
 from value_bot.analysis.parlays import build_parlays
 from value_bot.scrapers.espn import get_upcoming_nba_events

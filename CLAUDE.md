@@ -53,9 +53,11 @@ Sin deportes activos, `main()` sale sin scrapear ni enviar (y sin resolver resul
 - Over/Under 2.5 y BTTS con Poisson sobre XG `(gf_propio + ga_rival)/2`; Under solo en ligas defensivas; BTTS no se combina con Under.
 - 1X2 con diff de fuerza ≥ 24 (logística), Doble Chance 12–23, Empate con diff ≤ 10 y draw_pct ≥ 26 %.
 - Máx 3 picks/partido; value bet = edge ≥ 0.04 con cuota real (The Odds API).
+- Sin stats de ambos equipos → **sin picks** (ya no se usan promedios de liga ni el "Over 1.5" de respaldo).
+- Dedup: mismo pick (local, visitante, tipo) para la misma fecha del partido (`payload.date`) en cualquier corrida (`db.already_sent_for_game`), **antes** del tope `MAX_PICKS_SPORT`.
 - football-data.org free: solo PL, PD, BL1, SA, FL1, CL, WC, BSA, PPL (MLS/Liga MX → 403); 10 req/min (sleep 7 s). api-football: header `x-apisports-key`, 100 req/día.
 
-## NBA (`sports/nba.py`, `analysis/nba_model.py`, `get_nba_picks` en `analysis/picks.py`)
+## NBA (`sports/nba.py`, `analysis/nba_model.py`, `analysis/nba_picks.py`)
 - **Solo contra líneas reales** (DraftKings del scoreboard ESPN, `game["lines"]`, mismo parser que NFL: `scrapers/espn_lines.py`). Sin líneas no hay picks y ni se piden stats: un juego que solo trae api-sports/BBC/Flashscore no genera picks. Antes el bot inventaba la línea (total = su propia proyección, 1ª mitad y team total por debajo de la media) y la cuota (`0.95/p`): confianzas y ROI no medían nada apostable.
 - Proyección = media de ataque propio y defensa rival; con splits casa/visita de ambos se usan esos (ya traen la localía), si no ± `NBA_HFA`/2 (2.0). Margen ~ Normal(sd 12.5), total ~ Normal(sd 18).
 - Probabilidad = 0.15 modelo + 0.85 mercado sin vig (0.10 con `data_quality` "medium": stats de la temporada anterior, de api-sports o < `NBA_HIGH_DQ_GAMES` (10) juegos). Lado de **mayor EV** por mercado; una apuesta de lado (moneyline|spread) + total por partido (`market.drop_correlated`). Entra con cuota 1.30–3.50, 0 ≤ EV ≤ 0.10 (`NBA_MAX_PICK_VALUE`: el modelo no ve bajas ni descansos) y (conf ≥ 62 o EV ≥ 0.04). Tipos de pick = los del resolver ("Victoria X", "Hándicap X +2.5", "Over 211.5 Puntos").
@@ -67,7 +69,7 @@ Sin deportes activos, `main()` sale sin scrapear ni enviar (y sin resolver resul
 - Splits home/away solo si son de la **misma temporada** que las stats base del equipo (`season` en ambos); al inicio de temporada los splits caen a la anterior y no deben pisar los promedios actuales. `nba_get_home_away_splits(..., season=)` solo pide esa temporada.
 - Fuentes de juegos en funciones separadas (`_api_sports_games`, `_with_espn`, `_bbc_games`, `_flashscore_games`). Flashscore (fuente 4) solo acepta items con hora `HH:MM`: su página mezcla resultados y próximos días, y desde oct-2026 `.event__time` viene vacío (34/34 items sin hora) → hoy la fuente 4 no aporta juegos hasta reparar el selector.
 - Unión de fuentes: un juego de ESPN se une a uno de api-sports solo si coinciden local **y** visitante (`_same_matchup`). `is_finals` solo sale del headline ESPN "NBA Finals" (`espn._is_nba_finals`), nunca por el mes.
-- Dedup como NFL: un pick por (`event_id` ESPN, mercado) en cualquier corrida (`db.already_sent_for_event(..., sport="nba")`), y una sola apuesta de lado por partido entre corridas (`picks._nba_already_sent`).
+- Dedup como NFL: un pick por (`event_id` ESPN, mercado) en cualquier corrida (`db.already_sent_for_event(..., sport="nba")`), y una sola apuesta de lado por partido entre corridas (`nba_picks._already_sent`).
 
 ## Parlays (`analysis/parlays.py`)
 Piernas con conf ≥ 68 (fútbol) / ≥ 62 (NBA); doble ≥ 38 %, triple ≥ 27 %; ligas distintas. Picks NFL/NBA de value (< 62–68 %) no entran.
@@ -76,7 +78,7 @@ Piernas con conf ≥ 68 (fútbol) / ≥ 62 (NBA); doble ≥ 38 %, triple ≥ 27 
 - `picks`: una fila por pick enviado; `payload` JSON con el resto de campos (`event_id`, `market`, `side`, `kickoff`, `lines`, `push_prob`, `neutral_site`…).
 - `results`: la llena `resolver.resolve_pending_picks()` **al inicio de cada `main()` y del reporte semanal**: todos los picks pendientes NBA/NFL cuyo juego ya empezó (hasta 180 días), consultando ESPN por la fecha del juego. Push/empate → `void`. Fútbol aún no se resuelve.
 - `results.pick_id` tiene índice UNIQUE (requisito del `ON CONFLICT`; sin él el INSERT fallaba y la tabla quedó vacía meses).
-- El ROI del mensaje, el reporte semanal y la calibración (`get_calibration_factors`, hoy solo la usa fútbol) dependen de `results`.
+- El ROI del mensaje, el reporte semanal y la calibración dependen de `results`. `get_calibration_factors(sport, model_since)` solo usa picks resueltos de ese deporte y de su modelo vigente (90 días, ≥ 50 resueltos); hoy solo la usa fútbol. `_apply_calibration` recalcula el value (cuota real) o la cuota estimada para que cuota y probabilidad no queden inconsistentes.
 - El rendimiento del mensaje diario y todo el reporte semanal (ROI, calibración, mejores/peores picks; `main._current_scope`) solo cuentan **deportes activos** y picks con `run_date` ≥ `MODEL_SINCE[deporte]` (`config.py`): al recalibrar un modelo, actualizar esa fecha. El bloque sale desde 1 pick resuelto, con aviso de muestra pequeña por debajo de `PERF_MIN_SAMPLE` (5).
 
 ## Telegram
