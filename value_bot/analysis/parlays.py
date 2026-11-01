@@ -1,122 +1,104 @@
-"""Parlay builder — same-sport priority, diversity constraints."""
+"""
+Parlays: combinaciones de picks de partidos distintos, solo con cuota real y value.
+
+La cuota de un parlay es el producto de las cuotas, así que su EV es el producto de
+(1 + EV) de cada pierna: compone el edge del modelo y también su error. Por eso cada
+pierna exige cuota real y value ≥ VALUE_THRESHOLD, y se guardan y resuelven (tabla
+parlays) para medir si rinden.
+"""
 import logging
-from value_bot.config import MIN_CONF_PARLAY
+from collections.abc import Sequence
+from itertools import combinations
+from math import prod
+
+from value_bot.config import MIN_CONF_PARLAY, VALUE_THRESHOLD
 
 log = logging.getLogger(__name__)
 
-MIN_CONF_P_FB = 68
-MIN_PROB_2    = 0.38
-MIN_PROB_3    = 0.27
-SPORT_EMOJI   = {"football": "⚽", "nba": "🏀", "nfl": "🏈"}
+PARLAY_SPORTS = ("nba", "nfl")      # los que el resolver liquida (fútbol aún no)
+MIN_PROB = {2: 0.38, 3: 0.27}       # prob. de acertar todas las piernas
+LABELS = {2: "⚡ PARLAY DOBLE", 3: "🔥 PARLAY TRIPLE"}
+SPORT_EMOJI = {"football": "⚽", "nba": "🏀", "nfl": "🏈"}
 
 
-def build_parlays(all_picks):
-    """
-    v4.6: selective parlays.
-    - Min conf 68% for football legs
-    - Max 1 pick per league in the same parlay
-    - Double: combined prob >= 38%
-    - Triple: combined prob >= 27%
-    - Priority: diverse football > NBA > mixed high-confidence
-    """
-    hi_pool  = [p for p in all_picks if p["confidence"] >= MIN_CONF_P_FB]
-    pool_nba = [p for p in all_picks if p.get("sport") == "nba" and p["confidence"] >= MIN_CONF_PARLAY]
-    fp_hi    = [p for p in hi_pool if p.get("sport") == "football"]
+def is_eligible_leg(pick: dict) -> bool:
+    """Deporte que se resuelve, cuota real, probabilidad, value y confianza mínimos."""
+    if pick.get("sport") not in PARLAY_SPORTS:
+        return False
+    if not (pick.get("real_odds_source") and pick.get("est_odds") and pick.get("our_prob")):
+        return False
+    if (pick.get("value") or 0) < VALUE_THRESHOLD:
+        return False
+    return pick["confidence"] >= MIN_CONF_PARLAY
 
-    if len(hi_pool) + len(pool_nba) < 2:
-        log.info("Parlays: pool insuficiente (%d picks hi + %d nba)", len(hi_pool), len(pool_nba))
+
+def _win_prob(leg: dict) -> float:
+    """P(ganar) sin condicionar al push (our_prob es P(ganar | no push))."""
+    return leg["our_prob"] * (1 - (leg.get("push_prob") or 0))
+
+
+def parlay_stats(legs: Sequence[dict]) -> dict:
+    """Cuota, prob. de acertar todas (%) y EV del parlay; un push se cae del parlay (×1)."""
+    return {
+        "combined_odds":  round(prod(leg["est_odds"] for leg in legs), 2),
+        "combined_prob":  round(prod(_win_prob(leg) for leg in legs) * 100, 1),
+        "combined_value": round(prod(1 + leg["value"] for leg in legs) - 1, 4),
+    }
+
+
+def _game_key(leg: dict) -> str | tuple:
+    return leg.get("event_id") or (leg.get("home"), leg.get("away"))
+
+
+def _distinct_games(legs: Sequence[dict]) -> bool:
+    return len({_game_key(leg) for leg in legs}) == len(legs)
+
+
+def _leagues_diverse(legs: Sequence[dict]) -> bool:
+    return len({leg.get("league") for leg in legs}) == len(legs)
+
+
+def _best_combo(pool: list[dict], size: int) -> list[dict] | None:
+    """Combinación de partidos distintos con más EV (ligas distintas primero)."""
+    candidates = [c for c in combinations(pool, size)
+                  if _distinct_games(c) and prod(_win_prob(leg) for leg in c) >= MIN_PROB[size]]
+    if not candidates:
+        return None
+    return list(max(candidates, key=lambda c: (_leagues_diverse(c), parlay_stats(c)["combined_value"])))
+
+
+def _parlay(legs: list[dict]) -> dict:
+    sports = {leg.get("sport") for leg in legs}
+    tag = " MIXTO" if len(sports) > 1 else f" {SPORT_EMOJI.get(legs[0].get('sport'), '🎯')}"
+    return {"label": f"{LABELS[len(legs)]}{tag}", "legs": legs, **parlay_stats(legs)}
+
+
+def build_parlays(all_picks: list[dict]) -> list[dict]:
+    """Un doble y un triple como máximo; el triple no repite piernas del doble."""
+    pool = [p for p in all_picks if is_eligible_leg(p)]
+    if len(pool) < 2:
+        log.info("Parlays: pool insuficiente (%d piernas elegibles de %d picks)", len(pool), len(all_picks))
         return []
 
-    parlays = []
-
-    def combined_stats(legs):
-        o = pr = 1.0
-        for leg in legs:
-            o  *= leg.get("est_odds", 1.80)
-            pr *= leg.get("our_prob", 0.65)
-        return round(o, 2), round(pr * 100, 1)
-
-    def is_multi_sport(legs):
-        return len(set(l.get("sport", "?") for l in legs)) > 1
-
-    def leagues_diverse(legs):
-        lgs = [l.get("league", l.get("sport", "?")) for l in legs]
-        return len(lgs) == len(set(lgs))
-
-    def best_pair(picks_list, require_diff_game=True, require_div_league=True, min_prob=MIN_PROB_2):
-        best = None
-        best_score = -1
-        for i in range(len(picks_list)):
-            for j in range(i + 1, len(picks_list)):
-                l1, l2 = picks_list[i], picks_list[j]
-                same_game = (l1.get("home") == l2.get("home") and
-                             l1.get("away") == l2.get("away"))
-                if require_diff_game and same_game:
-                    continue
-                if require_div_league and not leagues_diverse([l1, l2]):
-                    continue
-                prob = l1.get("our_prob", 0.65) * l2.get("our_prob", 0.65)
-                if prob < min_prob:
-                    continue
-                score = l1["confidence"] + l2["confidence"]
-                if score > best_score:
-                    best = [l1, l2]
-                    best_score = score
-        return best
-
-    def best_triple(picks_list, require_div_league=True, min_prob=MIN_PROB_3):
-        best = None
-        best_score = -1
-        for i in range(len(picks_list)):
-            for j in range(i + 1, len(picks_list)):
-                for k in range(j + 1, len(picks_list)):
-                    legs  = [picks_list[i], picks_list[j], picks_list[k]]
-                    games = [(l.get("home"), l.get("away")) for l in legs]
-                    if len(set(games)) < len(games):
-                        continue
-                    if require_div_league and not leagues_diverse(legs):
-                        continue
-                    prob = 1.0
-                    for l in legs:
-                        prob *= l.get("our_prob", 0.65)
-                    if prob < min_prob:
-                        continue
-                    score = sum(l["confidence"] for l in legs)
-                    if score > best_score:
-                        best = legs
-                        best_score = score
-        return best
-
-    best_2 = (
-        best_pair(fp_hi)
-        or best_pair(fp_hi, require_div_league=False)
-        or best_pair(pool_nba)
-        or best_pair(hi_pool, min_prob=MIN_PROB_2 - 0.05)
-        or best_pair(hi_pool, require_div_league=False, min_prob=MIN_PROB_2 - 0.08)
-    )
-
-    if best_2:
-        co, cp = combined_stats(best_2)
-        multi     = is_multi_sport(best_2)
-        sport_tag = " MIXTO" if multi else ""
-        label = f"⚡ PARLAY DOBLE {SPORT_EMOJI.get(best_2[0].get('sport'), '🎯')}{sport_tag}"
-        parlays.append({"label": label, "legs": best_2,
-                        "combined_odds": co, "combined_prob": cp})
-
-    best_3 = (
-        best_triple(fp_hi)
-        or best_triple(fp_hi, require_div_league=False)
-        or best_triple(pool_nba)
-        or best_triple(hi_pool, require_div_league=False, min_prob=MIN_PROB_3 - 0.05)
-    )
-
-    if best_3:
-        co, cp = combined_stats(best_3)
-        sport_em = SPORT_EMOJI.get(best_3[0].get("sport"), "🎯")
-        parlays.append({"label": f"🔥 PARLAY TRIPLE {sport_em}",
-                        "legs": best_3,
-                        "combined_odds": co, "combined_prob": cp})
-
-    log.info("Parlays: %d (⚽hi:%d 🏀pool:%d hi_total:%d)",
-             len(parlays), len(fp_hi), len(pool_nba), len(hi_pool))
+    double = _best_combo(pool, 2)
+    used = {id(leg) for leg in double or []}
+    triple = _best_combo([p for p in pool if id(p) not in used], 3)
+    parlays = [_parlay(c) for c in (double, triple) if c]
+    log.info("Parlays: %d (de %d piernas elegibles)", len(parlays), len(pool))
     return parlays
+
+
+def settle_parlay(legs: list[dict]) -> tuple[str, float] | None:
+    """
+    (outcome, profit) con los resultados de las piernas [{outcome, est_odds}]; None si
+    falta alguna. Una pierna perdida pierde el parlay; un push (void) se cae y paga ×1.
+    """
+    outcomes = [leg.get("outcome") for leg in legs]
+    if "loss" in outcomes:
+        return "loss", -1.0
+    if any(o not in ("win", "void") for o in outcomes):
+        return None
+    winners = [leg["est_odds"] for leg in legs if leg["outcome"] == "win"]
+    if not winners:
+        return "void", 0.0
+    return "win", round(prod(winners) - 1, 4)

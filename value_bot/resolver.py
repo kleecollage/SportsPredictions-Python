@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import NamedTuple
 
 from value_bot import db
+from value_bot.analysis.parlays import settle_parlay
 from value_bot.config import ESPN_NBA_URL, ESPN_NFL_URL, http_get
 from value_bot.sports.nfl import ESPN_TZ
 
@@ -212,4 +213,23 @@ def resolve_pending_picks(now: datetime | None = None) -> int:
         resolved += sum(_resolve_one(pick, games) for pick in picks)
 
     log.info("Resultados: %d picks resueltos (%d fechas consultadas)", resolved, len(by_board))
+    return resolved
+
+
+def resolve_parlays(now: datetime | None = None) -> int:
+    """
+    Liquida los parlays pendientes con los resultados ya guardados de sus piernas.
+    Uno que sigue abierto pasado LOOKBACK_DAYS (sus piernas ya no se consultan) queda void.
+    """
+    oldest = ((now or datetime.now(timezone.utc)) - timedelta(days=LOOKBACK_DAYS)).date().isoformat()
+    resolved = 0
+    for parlay in db.get_pending_parlays():
+        settled = settle_parlay(parlay["legs"])
+        if settled is None and parlay["run_date"] < oldest:
+            log.warning("Parlay %d sin resolver tras %d días → void", parlay["id"], LOOKBACK_DAYS)
+            settled = ("void", 0.0)
+        if settled:
+            db.save_parlay_result(parlay["id"], *settled)
+            resolved += 1
+    log.info("Parlays: %d resueltos", resolved)
     return resolved

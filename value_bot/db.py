@@ -48,25 +48,41 @@ def init_db():
                 source       TEXT
             )
         """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_picks_date_game
-            ON picks (run_date, home, away)
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_results_outcome
-            ON results (outcome)
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_picks_sport_league
-            ON picks (sport, league, run_date)
-        """)
+        _create_indexes(conn)
         _dedupe_results(conn)
         conn.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS idx_results_pick_id
             ON results (pick_id)
         """)
+        _create_parlays_table(conn)
         conn.commit()
     log.info("DB inicializada: %s", DB_PATH)
+
+
+def _create_indexes(conn: sqlite3.Connection) -> None:
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_picks_date_game ON picks (run_date, home, away)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_results_outcome ON results (outcome)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_picks_sport_league ON picks (sport, league, run_date)")
+
+
+def _create_parlays_table(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS parlays (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_date       TEXT NOT NULL,
+            label          TEXT,
+            leg_ids        TEXT NOT NULL,   -- JSON [picks.id, ...] ordenado
+            combined_odds  REAL,
+            combined_prob  REAL,
+            combined_value REAL,
+            outcome        TEXT CHECK(outcome IN ('win','loss','void','pending'))
+                           DEFAULT 'pending',
+            profit_units   REAL,
+            resolved_at    TEXT,
+            created_at     TEXT DEFAULT (datetime('now')),
+            UNIQUE (run_date, leg_ids)
+        )
+    """)
 
 
 def _dedupe_results(conn: sqlite3.Connection) -> None:
@@ -176,6 +192,100 @@ def already_sent_for_event(event_id: str, market: str, sport: str = "nfl") -> bo
             LIMIT 1
         """, (sport, event_id, market)).fetchone()
     return row is not None
+
+
+# ── Parlays ───────────────────────────────────────────────────────
+
+def _pick_id(conn: sqlite3.Connection, run_date: str, leg: dict) -> int | None:
+    """id del pick guardado por save_picks (misma clave: run_date + partido + tipo)."""
+    row = conn.execute("""
+        SELECT id FROM picks WHERE run_date=? AND home=? AND away=? AND pick_type=?
+        ORDER BY id LIMIT 1
+    """, (run_date, leg.get("home", ""), leg.get("away", ""), leg.get("type", ""))).fetchone()
+    return row[0] if row else None
+
+
+def save_parlays(run_date: str, parlays: list[dict]) -> int:
+    """
+    Guarda los parlays enviados ligados a los picks de sus piernas (llamar después de
+    save_picks). Un parlay con alguna pierna sin guardar se salta. Retorna los insertados.
+    """
+    inserted = 0
+    with sqlite3.connect(DB_PATH) as conn:
+        for parlay in parlays:
+            ids = [_pick_id(conn, run_date, leg) for leg in parlay["legs"]]
+            if None in ids:
+                log.warning("DB: parlay %s con piernas sin guardar → no se registra", parlay.get("label"))
+                continue
+            inserted += conn.execute("""
+                INSERT OR IGNORE INTO parlays
+                  (run_date, label, leg_ids, combined_odds, combined_prob, combined_value)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (run_date, parlay.get("label"), json.dumps(sorted(ids)), parlay.get("combined_odds"),
+                  parlay.get("combined_prob"), parlay.get("combined_value"))).rowcount
+        conn.commit()
+    return inserted
+
+
+def get_pending_parlays() -> list[dict]:
+    """
+    [{id, run_date, legs: [{pick_id, outcome, est_odds}]}] de parlays sin resolver.
+    outcome es None sin resultado, y 'void' si el pick de la pierna ya no existe.
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute("""
+            SELECT pl.id, pl.run_date, j.value, p.id, p.est_odds, r.outcome
+            FROM parlays pl
+            JOIN json_each(pl.leg_ids) j
+            LEFT JOIN picks p   ON p.id = j.value
+            LEFT JOIN results r ON r.pick_id = j.value
+            WHERE pl.outcome = 'pending'
+            ORDER BY pl.id, j.key
+        """).fetchall()
+    parlays: dict[int, dict] = {}
+    for parlay_id, run_date, leg_id, pick_id, est_odds, outcome in rows:
+        if pick_id is None:
+            log.warning("DB: parlay %d sin el pick %s → esa pierna cuenta como void", parlay_id, leg_id)
+            outcome = "void"
+        parlay = parlays.setdefault(parlay_id, {"id": parlay_id, "run_date": run_date, "legs": []})
+        parlay["legs"].append({"pick_id": leg_id, "outcome": outcome, "est_odds": est_odds})
+    return list(parlays.values())
+
+
+def save_parlay_result(parlay_id: int, outcome: str, profit_units: float) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""
+            UPDATE parlays SET outcome = ?, profit_units = ?, resolved_at = datetime('now')
+            WHERE id = ?
+        """, (outcome, profit_units, parlay_id))
+        conn.commit()
+
+
+def get_parlay_summary(days: int = 7, sports=None, model_since: dict | None = None) -> dict:
+    """
+    {period_days, total, wins, profit} de parlays ganados/perdidos resueltos en los últimos
+    N días; {} sin datos. Un parlay cuenta si todas sus piernas están en el alcance
+    (sports / model_since, como get_roi_summary).
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute("""
+            SELECT pl.id, pl.outcome, pl.profit_units, p.sport, p.run_date
+            FROM parlays pl
+            JOIN json_each(pl.leg_ids) j
+            JOIN picks p ON p.id = j.value
+            WHERE pl.outcome IN ('win', 'loss') AND date(pl.resolved_at) >= date('now', ?)
+        """, (f"-{days} days",)).fetchall()
+    parlays: dict[int, tuple] = {}
+    out_of_scope: set[int] = set()
+    for parlay_id, outcome, profit, sport, run_date in rows:
+        parlays[parlay_id] = (outcome, profit)
+        if not _in_scope(sport, run_date, sports, model_since):
+            out_of_scope.add(parlay_id)
+    kept = [v for k, v in parlays.items() if k not in out_of_scope]
+    if not kept:
+        return {}
+    return {"period_days": days, "total": len(kept), "wins": sum(o == "win" for o, _ in kept),
+            "profit": round(sum(p or 0 for _, p in kept), 2)}
 
 
 # ── Resultados ────────────────────────────────────────────────────

@@ -15,8 +15,10 @@ from value_bot.analysis.parlays import build_parlays
 from value_bot.scrapers.espn import get_upcoming_nba_events
 from value_bot.telegram_sender import build_message, build_weekly_report, send_telegram
 from value_bot.store import store
-from value_bot.db import init_db, save_picks, get_roi_summary, get_model_calibration, get_recent_picks
-from value_bot.resolver import resolve_pending_picks
+from value_bot.db import (
+    get_model_calibration, get_parlay_summary, get_recent_picks, get_roi_summary, init_db, save_parlays, save_picks,
+)
+from value_bot.resolver import resolve_parlays, resolve_pending_picks
 
 try:
     from value_bot.sports.nba import NBA_API_OK as _NBA_API_OK
@@ -57,11 +59,23 @@ def _current_performance() -> dict:
 
 
 def _resolve_results():
-    """Resuelve picks pendientes; un fallo aquí no debe frenar el envío."""
+    """Resuelve picks y luego parlays pendientes; un fallo aquí no debe frenar el envío."""
     try:
         resolve_pending_picks()
     except Exception:
         log.exception("Resolución de resultados falló")
+    try:
+        resolve_parlays()
+    except Exception:
+        log.exception("Resolución de parlays falló")
+
+
+def _save_parlays(run_date: str, parlays: list) -> None:
+    """El mensaje ya salió: un fallo al guardar parlays se loguea y la corrida sigue."""
+    try:
+        save_parlays(run_date, parlays)
+    except Exception:
+        log.exception("Guardar parlays falló")
 
 
 async def main() -> None:
@@ -99,8 +113,9 @@ async def main() -> None:
 
     run_date = datetime.now().strftime("%Y-%m-%d")
 
-    # Persistir picks del día
+    # Persistir picks del día y los parlays (ligados a esos picks)
     inserted = save_picks(run_date, all_picks)
+    _save_parlays(run_date, parlays)
 
     log.info("═══ ✓ Enviado | ⚽%d 🏀%d 🏈%d | Parlays:%d | DB:%d picks ═══",
              len(football_picks), len(nba_picks), len(nfl_picks), len(parlays), inserted)
@@ -114,7 +129,7 @@ async def weekly_report():
     roi    = _current_performance()
     calib  = get_model_calibration(min_picks=5, **_current_scope())
     recent = get_recent_picks(days=7, **_current_scope())
-    msg    = build_weekly_report(roi, calib, recent)
+    msg    = build_weekly_report(roi, calib, recent, parlays=get_parlay_summary(days=7, **_current_scope()))
     await send_telegram(msg)
     log.info("═══ ✓ Reporte semanal enviado ═══")
 

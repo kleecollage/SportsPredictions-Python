@@ -73,7 +73,10 @@ Sin deportes activos, `main()` sale sin scrapear ni enviar (y sin resolver resul
 - Dedup como NFL: un pick por (`event_id` ESPN, mercado) en cualquier corrida (`db.already_sent_for_event(..., sport="nba")`), y una sola apuesta de lado por partido entre corridas (`nba_picks._already_sent`).
 
 ## Parlays (`analysis/parlays.py`)
-Piernas con conf ≥ 68 (fútbol) / ≥ 62 (NBA); doble ≥ 38 %, triple ≥ 27 %; ligas distintas. Picks NFL/NBA de value (< 62–68 %) no entran.
+- La cuota es el producto de las cuotas → EV = ∏(1 + EV pierna) − 1: compone el edge **y el error** del modelo (con ROI −13.8 % por pierna NBA, un doble rinde ≈ −26 %). El mensaje lo advierte y muestra el EV del modelo.
+- Pierna elegible (`is_eligible_leg`): deporte que el resolver liquida (`PARLAY_SPORTS` = NBA/NFL; **fútbol fuera** hasta que se resuelva), cuota real (`real_odds_source`), `our_prob`, value ≥ `VALUE_THRESHOLD` y conf ≥ `MIN_CONF_PARLAY` (62). Sin cuota o probabilidad no entra (ya no se asumen 1.80 / 65 %).
+- Partidos distintos (`event_id`, o local+visitante); se elige la combinación de **más EV**, prefiriendo ligas distintas (antes se exigían y los NBA, todos "NBA", nunca se combinaban). Prob. de acertar todas (sin push) ≥ 38 % doble / 27 % triple. El triple **no repite piernas** del doble.
+- **Se guardan y resuelven**: tabla `parlays` (`leg_ids` = ids de `picks`, `db.save_parlays` después de `save_picks`); `resolver.resolve_parlays` corre tras resolver los picks y liquida con `settle_parlay` (una pierna perdida → −1; push se cae y paga ×1; falta una → pendiente). Pierna cuyo pick ya no existe → void; parlay abierto tras `LOOKBACK_DAYS` (180) → void. El reporte semanal muestra el récord (`get_parlay_summary`, mismo alcance que el ROI: todas las piernas de deportes activos y del modelo vigente).
 
 ## Base de datos (`picks_history.db`, versionada en git)
 - `picks`: una fila por pick enviado; `payload` JSON con el resto de campos (`event_id`, `market`, `side`, `kickoff`, `lines`, `push_prob`, `neutral_site`…).

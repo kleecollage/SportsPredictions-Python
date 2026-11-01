@@ -202,217 +202,196 @@ def _no_picks_block(analyzed: dict | None) -> list[str]:
     ]
 
 
-def build_message(fp, np, parlays, upcoming=None, perf=None, nflp=None, analyzed=None):
+SEP = "━━━━━━━━━━━━━━━━━━━━━━"
+
+
+def _date_line() -> str:
     now = datetime.now()
-    ds  = f"{DAYS_ES[now.weekday()]}, {now.day} de {MONTHS_ES[now.month-1]} de {now.year}"
+    return f"📅 {DAYS_ES[now.weekday()]}, {now.day} de {MONTHS_ES[now.month-1]} de {now.year}"
 
-    lines = [
-        "🏆 <b>VALUE BOT PRO v4.6</b>",
-        f"📅 {ds}",
-        "━━━━━━━━━━━━━━━━━━━━━━",
-        "",
-    ]
 
+def _value_count(picks: list) -> int:
+    return sum(1 for p in picks if p.get("value") and p["value"] >= VALUE_THRESHOLD)
+
+
+def _picks_section(header: str, picks: list, groups: list | None = None) -> list[str]:
+    """Encabezado de sección + un bloque por partido."""
+    lines = [SEP, header, SEP, ""]
+    for group in groups if groups is not None else _group_picks_by_game(picks):
+        lines.extend(_game_block(group))
+    lines.append("")
+    return lines
+
+
+def _nba_sections(np: list) -> list[str]:
+    finals  = [p for p in np if p.get("is_finals")]
+    regular = [p for p in np if not p.get("is_finals")]
+    lines = _picks_section(f"🏆 <b>NBA FINALS {datetime.now().year}</b>", finals) if finals else []
+    if regular:
+        groups = _group_picks_by_game(regular)
+        lines += _picks_section(f"🏀 <b>NBA</b> ({_section_counts(groups, regular, 'juego')})", regular, groups)
+    return lines
+
+
+def _counted_section(emoji_title: str, picks: list, noun: str) -> list[str]:
+    groups = _group_picks_by_game(picks)
+    counts = _section_counts(groups, picks, noun, _value_count(picks))
+    return _picks_section(f"{emoji_title} ({counts})", picks, groups)
+
+
+def _picks_blocks(fp: list, np: list, nflp: list) -> list[str]:
+    total = len(fp) + len(np) + len(nflp)
+    generated = "generado" if total == 1 else "generados"
+    lines = [f"🎯 <b>{plural(total, 'pick')} {generated} hoy</b>", ""]
+    if np:
+        lines += _nba_sections(np)
+    if fp:
+        lines += _counted_section("⚽ <b>FÚTBOL</b>", fp, "partido")
+    if nflp:
+        lines += _counted_section("🏈 <b>NFL</b>", nflp, "juego")
+    return lines
+
+
+def _parlays_block(parlays: list) -> list[str]:
+    if not parlays:
+        return []
+    lines = [SEP, "🎰 <b>PARLAYS</b>", SEP,
+             "<i>Un parlay multiplica el edge del modelo y también su error.</i>", ""]
+    for parlay in parlays:
+        lines.append(f"<b>{parlay['label']}</b>")
+        lines.append(
+            f"   Cuota combinada: <code>{parlay['combined_odds']}x</code>  ·  "
+            f"Prob. conjunta: <b>~{parlay['combined_prob']:.1f}%</b>  ·  "
+            f"EV modelo: <b>{parlay['combined_value']:+.1%}</b>"
+        )
+        for leg in parlay["legs"]:
+            em = SPORT_EMO.get(leg.get("sport", ""), "🎯")
+            lines.append(f"   {em} {leg['home']} vs {leg['away']} → <b>{leg['type']}</b> ({leg['confidence']}%)")
+        lines.append("")
+    return lines
+
+
+def _upcoming_block(upcoming: list | None) -> list[str]:
+    if not upcoming:
+        return []
+    lines = [SEP, "📅 <b>PRÓXIMOS PARTIDOS</b>", SEP, ""]
+    for u in upcoming:
+        ko   = fmt_ko(u.get("kickoff", ""))
+        ko_s = f"  ·  {ko}" if ko else f"  ·  {u.get('date','')}"
+        icon = "🏆" if u.get("is_finals") else "🏀"
+        series = f" <i>({u['series_summary']})</i>" if u.get("series_summary") else ""
+        lines += [f"   {icon} <b>{u['home']} vs {u['away']}</b>{series}", f"   {ko_s}", ""]
+    return lines
+
+
+def build_message(fp, np, parlays, upcoming=None, perf=None, nflp=None, analyzed=None):
+    lines = ["🏆 <b>VALUE BOT PRO v4.6</b>", _date_line(), SEP, ""]
     nflp = nflp or []
     if not fp and not np and not nflp:
         lines += _no_picks_block(analyzed)
     else:
-        total = len(fp) + len(np) + len(nflp)
-        generated = "generado" if total == 1 else "generados"
-        lines.append(f"🎯 <b>{plural(total, 'pick')} {generated} hoy</b>")
-        lines.append("")
-
-        if np:
-            finals_picks  = [p for p in np if p.get("is_finals")]
-            regular_picks = [p for p in np if not p.get("is_finals")]
-
-            if finals_picks:
-                lines += [
-                    "━━━━━━━━━━━━━━━━━━━━━━",
-                    f"🏆 <b>NBA FINALS {datetime.now().year}</b>",
-                    "━━━━━━━━━━━━━━━━━━━━━━",
-                    "",
-                ]
-                for group in _group_picks_by_game(finals_picks):
-                    lines.extend(_game_block(group))
-                lines.append("")
-
-            if regular_picks:
-                groups = _group_picks_by_game(regular_picks)
-                lines += [
-                    "━━━━━━━━━━━━━━━━━━━━━━",
-                    f"🏀 <b>NBA</b> ({_section_counts(groups, regular_picks, 'juego')})",
-                    "━━━━━━━━━━━━━━━━━━━━━━",
-                    "",
-                ]
-                for g in groups:
-                    lines.extend(_game_block(g))
-                lines.append("")
-
-        if fp:
-            vcount = sum(1 for p in fp if p.get("value") and p["value"] >= VALUE_THRESHOLD)
-            groups = _group_picks_by_game(fp)
-            lines += [
-                "━━━━━━━━━━━━━━━━━━━━━━",
-                f"⚽ <b>FÚTBOL</b> ({_section_counts(groups, fp, 'partido', vcount)})",
-                "━━━━━━━━━━━━━━━━━━━━━━",
-                "",
-            ]
-            for g in groups:
-                lines.extend(_game_block(g))
-            lines.append("")
-
-        if nflp:
-            vcount = sum(1 for p in nflp if p.get("value") and p["value"] >= VALUE_THRESHOLD)
-            groups = _group_picks_by_game(nflp)
-            lines += [
-                "━━━━━━━━━━━━━━━━━━━━━━",
-                f"🏈 <b>NFL</b> ({_section_counts(groups, nflp, 'juego', vcount)})",
-                "━━━━━━━━━━━━━━━━━━━━━━",
-                "",
-            ]
-            for g in groups:
-                lines.extend(_game_block(g))
-            lines.append("")
-
-        if parlays:
-            lines += [
-                "━━━━━━━━━━━━━━━━━━━━━━",
-                "🎰 <b>PARLAYS RECOMENDADOS</b>",
-                "━━━━━━━━━━━━━━━━━━━━━━",
-                "",
-            ]
-            for parlay in parlays:
-                lines.append(f"<b>{parlay['label']}</b>")
-                lines.append(
-                    f"   Cuota combinada: <code>{parlay['combined_odds']}x</code>  ·  "
-                    f"Prob. conjunta: <b>~{parlay['combined_prob']:.1f}%</b>"
-                )
-                for leg in parlay["legs"]:
-                    em = SPORT_EMO.get(leg.get("sport", ""), "🎯")
-                    lines.append(
-                        f"   {em} {leg['home']} vs {leg['away']} "
-                        f"→ <b>{leg['type']}</b> ({leg['confidence']}%)"
-                    )
-                lines.append("")
-
-    if upcoming:
-        lines += [
-            "━━━━━━━━━━━━━━━━━━━━━━",
-            "📅 <b>PRÓXIMOS PARTIDOS</b>",
-            "━━━━━━━━━━━━━━━━━━━━━━",
-            "",
-        ]
-        for u in upcoming:
-            ko   = fmt_ko(u.get("kickoff", ""))
-            ko_s = f"  ·  {ko}" if ko else f"  ·  {u.get('date','')}"
-            icon = "🏆" if u.get("is_finals") else "🏀"
-            series = f" <i>({u['series_summary']})</i>" if u.get("series_summary") else ""
-            lines.append(f"   {icon} <b>{u['home']} vs {u['away']}</b>{series}")
-            lines.append(f"   {ko_s}")
-            lines.append("")
+        lines += _picks_blocks(fp, np, nflp) + _parlays_block(parlays)
+    lines += _upcoming_block(upcoming)
 
     # Bloque de rendimiento (solo si hay datos resueltos)
     if perf and perf.get("total_picks", 0) >= 1:
         lines.append(_performance_block(perf))
 
     lines += [
-        "━━━━━━━━━━━━━━━━━━━━━━",
+        SEP,
         "⚠️ <i>Solo análisis informativo. Juega con responsabilidad.</i>",
         "🤖 <i>Value Bot Pro v4.6  ·  Multi-Deporte + Playwright</i>",
     ]
     return "\n".join(lines)
 
 
-def build_weekly_report(roi: dict, calib: list, recent: list) -> str:
-    """Mensaje de reporte semanal completo para envío los lunes."""
-    now = datetime.now()
-    ds  = f"{DAYS_ES[now.weekday()]}, {now.day} de {MONTHS_ES[now.month-1]} de {now.year}"
-
-    lines = [
-        "📊 <b>VALUE BOT PRO — REPORTE SEMANAL</b>",
-        f"📅 {ds}",
-        "━━━━━━━━━━━━━━━━━━━━━━",
-        "",
-    ]
-
+def _weekly_summary_block(roi: dict) -> list[str]:
     if roi.get("error"):
-        lines += [
+        return [
             "⚠️ <i>Sin picks resueltos del modelo actual esta semana.</i>",
             "<i>El reporte se enriquecerá a medida que se acumulen resultados.</i>",
             "",
         ]
-    else:
-        lines += [
-            f"🎯 <b>Resumen general (resueltos en {roi['period_days']} días · modelo actual)</b>",
-            f"   Picks resueltos: <b>{roi['total_picks']}</b>",
-            f"   Win rate: <b>{roi['win_rate']}%</b>",
-            f"   ROI: <b>{roi['roi_pct']:+.1f}%</b>  ·  Profit: <b>{roi['total_profit']:+.2f}u</b>",
-            "",
-        ]
-
-        by_sport = roi.get("by_sport", {})
-        if by_sport:
-            lines.append("📈 <b>Por deporte</b>")
-            for sport, sd in by_sport.items():
-                em = SPORT_EMO.get(sport, "🎯")
-                lines.append(
-                    f"   {em} <b>{sport.upper()}</b>: "
-                    f"{sd['win_rate']}% WR  ·  {sd['profit']:+.2f}u  ·  {plural(sd['total'], 'pick')}"
-                )
-            lines.append("")
-
-        by_quality = roi.get("by_quality", {})
-        if by_quality:
-            lines.append("🔍 <b>Por calidad de datos</b>")
-            for dq in ("high", "medium", "low"):
-                if dq in by_quality:
-                    qd = by_quality[dq]
-                    wr = qd.get("win_rate", round(qd.get("wins", 0) / max(qd.get("total", 1), 1) * 100, 1))
-                    lines.append(f"   {q_icon(dq)} {dq.capitalize()}: {wr}% WR  ·  {plural(qd['total'], 'pick')}")
-            lines.append("")
-
-    if calib:
-        lines += [
-            "━━━━━━━━━━━━━━━━━━━━━━",
-            "🧮 <b>Calibración del modelo</b>",
-            "<code>Bucket     Predicho  Real      Delta</code>",
-        ]
-        for c in calib:
-            delta_sign = "+" if c["delta"] >= 0 else ""
-            lines.append(
-                f"<code>{c['confidence_bucket']:<10} "
-                f"{c['predicted_prob']:>5}%    "
-                f"{c['actual_win_rate']:>5}%    "
-                f"{delta_sign}{c['delta']}%</code>"
-            )
+    lines = [
+        f"🎯 <b>Resumen general (resueltos en {roi['period_days']} días · modelo actual)</b>",
+        f"   Picks resueltos: <b>{roi['total_picks']}</b>",
+        f"   Win rate: <b>{roi['win_rate']}%</b>",
+        f"   ROI: <b>{roi['roi_pct']:+.1f}%</b>  ·  Profit: <b>{roi['total_profit']:+.2f}u</b>",
+        "",
+    ]
+    by_sport = roi.get("by_sport", {})
+    if by_sport:
+        lines.append("📈 <b>Por deporte</b>")
+        for sport, sd in by_sport.items():
+            em = SPORT_EMO.get(sport, "🎯")
+            lines.append(f"   {em} <b>{sport.upper()}</b>: "
+                         f"{sd['win_rate']}% WR  ·  {sd['profit']:+.2f}u  ·  {plural(sd['total'], 'pick')}")
         lines.append("")
+    by_quality = roi.get("by_quality", {})
+    if by_quality:
+        lines.append("🔍 <b>Por calidad de datos</b>")
+        for dq in ("high", "medium", "low"):
+            if dq in by_quality:
+                qd = by_quality[dq]
+                wr = qd.get("win_rate", round(qd.get("wins", 0) / max(qd.get("total", 1), 1) * 100, 1))
+                lines.append(f"   {q_icon(dq)} {dq.capitalize()}: {wr}% WR  ·  {plural(qd['total'], 'pick')}")
+        lines.append("")
+    return lines
 
-    if recent:
-        best  = sorted([r for r in recent if r.get("outcome") == "win"],
-                       key=lambda x: x.get("est_odds", 0) or 0, reverse=True)[:3]
-        worst = [r for r in recent if r.get("outcome") == "loss"][-3:]
-        if best:
-            lines += ["━━━━━━━━━━━━━━━━━━━━━━", "🏆 <b>Mejores picks de la semana</b>"]
-            for r in best:
-                em = SPORT_EMO.get(r["sport"], "🎯")
-                lines.append(
-                    f"   {em} ✅ <b>{r['pick_type']}</b> "
-                    f"({r['home']} vs {r['away']})  ·  {r['run_date']}"
-                )
-            lines.append("")
-        if worst:
-            lines += ["━━━━━━━━━━━━━━━━━━━━━━", "📉 <b>Picks fallidos</b>"]
-            for r in worst:
-                em = SPORT_EMO.get(r["sport"], "🎯")
-                lines.append(
-                    f"   {em} ❌ <b>{r['pick_type']}</b> "
-                    f"({r['home']} vs {r['away']})  ·  {r['run_date']}"
-                )
-            lines.append("")
 
+def _parlay_summary_lines(parlays: dict | None) -> list[str]:
+    if not parlays:
+        return []
+    losses = parlays["total"] - parlays["wins"]
+    return [
+        f"🎰 <b>Parlays (resueltos en {parlays['period_days']} días)</b>: {parlays['wins']}-{losses}  ·  "
+        f"{parlays['profit']:+.2f}u  ·  {plural(parlays['total'], 'parlay')}",
+        "",
+    ]
+
+
+def _calibration_block(calib: list) -> list[str]:
+    if not calib:
+        return []
+    lines = [SEP, "🧮 <b>Calibración del modelo</b>", "<code>Bucket     Predicho  Real      Delta</code>"]
+    for c in calib:
+        delta_sign = "+" if c["delta"] >= 0 else ""
+        lines.append(
+            f"<code>{c['confidence_bucket']:<10} "
+            f"{c['predicted_prob']:>5}%    "
+            f"{c['actual_win_rate']:>5}%    "
+            f"{delta_sign}{c['delta']}%</code>"
+        )
+    lines.append("")
+    return lines
+
+
+def _recent_list(title: str, mark: str, picks: list) -> list[str]:
+    if not picks:
+        return []
+    lines = [SEP, title]
+    for r in picks:
+        em = SPORT_EMO.get(r["sport"], "🎯")
+        lines.append(f"   {em} {mark} <b>{r['pick_type']}</b> ({r['home']} vs {r['away']})  ·  {r['run_date']}")
+    lines.append("")
+    return lines
+
+
+def _recent_block(recent: list) -> list[str]:
+    best  = sorted([r for r in recent if r.get("outcome") == "win"],
+                   key=lambda x: x.get("est_odds", 0) or 0, reverse=True)[:3]
+    worst = [r for r in recent if r.get("outcome") == "loss"][-3:]
+    return (_recent_list("🏆 <b>Mejores picks de la semana</b>", "✅", best)
+            + _recent_list("📉 <b>Picks fallidos</b>", "❌", worst))
+
+
+def build_weekly_report(roi: dict, calib: list, recent: list, parlays: dict | None = None) -> str:
+    """Mensaje de reporte semanal completo para envío los lunes."""
+    lines = ["📊 <b>VALUE BOT PRO — REPORTE SEMANAL</b>", _date_line(), SEP, ""]
+    lines += (_weekly_summary_block(roi) + _parlay_summary_lines(parlays)
+              + _calibration_block(calib) + _recent_block(recent or []))
     lines += [
-        "━━━━━━━━━━━━━━━━━━━━━━",
+        SEP,
         "⚠️ <i>Solo análisis informativo. Juega con responsabilidad.</i>",
         "🤖 <i>Value Bot Pro v4.6  ·  Reporte Semanal</i>",
     ]
