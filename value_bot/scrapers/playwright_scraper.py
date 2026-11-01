@@ -1,21 +1,19 @@
 """Playwright stealth browser utilities shared by all scrapers."""
 import asyncio
-import random
 import logging
+import random
+import re
+from importlib.util import find_spec
 
-from value_bot.config import USER_AGENTS, STEALTH_SCRIPT, PLAYWRIGHT_TIMEOUT
+from value_bot.config import USER_AGENTS, STEALTH_SCRIPT
 
-try:
-    from bs4 import BeautifulSoup
-    BS4_OK = True
-except ImportError:
-    BS4_OK = False
 
-try:
-    from playwright.async_api import async_playwright
-    PLAYWRIGHT_OK = True
-except ImportError:
-    PLAYWRIGHT_OK = False
+def _has_modules(*names: str) -> bool:
+    return all(find_spec(name) is not None for name in names)
+
+
+BS4_OK = _has_modules("bs4", "lxml")       # los scrapers parsean con BeautifulSoup(html, "lxml")
+PLAYWRIGHT_OK = _has_modules("playwright")
 
 log = logging.getLogger(__name__)
 
@@ -28,7 +26,6 @@ async def _build_stealth_browser(playwright):
     browser = await playwright.chromium.launch(
         headless=True,
         args=[
-            "--no-sandbox",
             "--disable-blink-features=AutomationControlled",
             "--disable-dev-shm-usage",
             "--disable-gpu",
@@ -57,23 +54,26 @@ async def _build_stealth_browser(playwright):
     return browser, context
 
 
+COOKIE_SELECTORS = (
+    "#onetrust-accept-btn-handler",
+    ".cookieConsent__Button",
+    "button.fc-cta-consent",
+)
+COOKIE_TIMEOUT_MS = 2000
+_KICKOFF_RE = re.compile(r"\d{1,2}:\d{2}")
+
+
 async def _accept_cookies(page) -> None:
-    for sel in (
-        "#onetrust-accept-btn-handler",
-        "button[id*='accept']",
-        ".cookieConsent__Button",
-        "button.fc-cta-consent",
-    ):
-        try:
-            await page.click(sel, timeout=2000)
-            await _human_delay(400, 800)
-            return
-        except Exception:
-            pass
+    """Un solo intento contra todos los avisos conocidos; sin aviso no es un error."""
+    try:
+        await page.click(", ".join(COOKIE_SELECTORS), timeout=COOKIE_TIMEOUT_MS)
+        await _human_delay(400, 800)
+    except Exception as exc:
+        log.debug("Sin aviso de cookies que aceptar: %s", exc)
 
 
 def _parse_flashscore_item(item) -> dict | None:
-    """Parse a .event__match div from Flashscore HTML."""
+    """Parse a .event__match div from Flashscore HTML; None si no es un partido por jugar."""
     time_el = item.select_one(".event__time")
     home_el = (item.select_one(".event__participant--home") or
                item.select_one(".event__homeParticipant") or
@@ -84,7 +84,8 @@ def _parse_flashscore_item(item) -> dict | None:
     if not (home_el and away_el):
         return None
     time_txt = time_el.get_text(strip=True) if time_el else ""
-    if any(x in time_txt.upper() for x in ("FT", "AET", "PEN", "CANC", "POSTP", "ABD", "WO")):
+    # La página mezcla resultados, en vivo y otros días: solo HH:MM es un partido por jugar
+    if not _KICKOFF_RE.fullmatch(time_txt):
         return None
     home = home_el.get_text(strip=True)
     away = away_el.get_text(strip=True)
