@@ -92,7 +92,8 @@ async def main() -> None:
     parlays   = build_parlays(all_picks)
     upcoming  = get_upcoming_nba_events() if SPORTS_ENABLED.get("nba") else []
     perf      = _current_performance()
-    message   = build_message(football_picks, nba_picks, parlays, upcoming, perf=perf, nflp=nfl_picks)
+    message   = build_message(football_picks, nba_picks, parlays, upcoming, perf=perf, nflp=nfl_picks,
+                              analyzed=dict(store.games_analyzed))
 
     await send_telegram(message)
 

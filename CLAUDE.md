@@ -67,6 +67,7 @@ Sin deportes activos, `main()` sale sin scrapear ni enviar (y sin resolver resul
 - Sin LeagueDash de un equipo (ni actual ni anterior) → sin stats → **sin picks** de ese juego (ya no se inventan `opp_ppg` 115 ni picks genéricos "Over 215.5").
 - `NBA_API_TIMEOUT` = 10 s por request; el primer fallo de red pone `store.nba_api_down` y se deja de llamar a nba_api en esa corrida. Una respuesta con esquema inesperado (columna faltante) se loguea y se trata como sin datos (`_PARSE_ERRORS`), nunca sube.
 - Splits home/away solo si son de la **misma temporada** que las stats base del equipo (`season` en ambos); al inicio de temporada los splits caen a la anterior y no deben pisar los promedios actuales. `nba_get_home_away_splits(..., season=)` solo pide esa temporada.
+- **Solo juegos sin empezar**: ESPN `STATUS_SCHEDULED` y api-sports `NS` (como NFL). En vivo ESPN borra las líneas y el modelo es pre-partido; una corrida manual de tarde veía juegos en medio tiempo.
 - Fuentes de juegos en funciones separadas (`_api_sports_games`, `_with_espn`, `_bbc_games`, `_flashscore_games`). Flashscore (fuente 4) solo acepta items con hora `HH:MM`: su página mezcla resultados y próximos días, y desde oct-2026 `.event__time` viene vacío (34/34 items sin hora) → hoy la fuente 4 no aporta juegos hasta reparar el selector.
 - Unión de fuentes: un juego de ESPN se une a uno de api-sports solo si coinciden local **y** visitante (`_same_matchup`). `is_finals` solo sale del headline ESPN "NBA Finals" (`espn._is_nba_finals`), nunca por el mes.
 - Dedup como NFL: un pick por (`event_id` ESPN, mercado) en cualquier corrida (`db.already_sent_for_event(..., sport="nba")`), y una sola apuesta de lado por partido entre corridas (`nba_picks._already_sent`).
@@ -79,10 +80,11 @@ Piernas con conf ≥ 68 (fútbol) / ≥ 62 (NBA); doble ≥ 38 %, triple ≥ 27 
 - `results`: la llena `resolver.resolve_pending_picks()` **al inicio de cada `main()` y del reporte semanal**: todos los picks pendientes NBA/NFL cuyo juego ya empezó (hasta 180 días), consultando ESPN por la fecha del juego. Push/empate → `void`. Fútbol aún no se resuelve.
 - `results.pick_id` tiene índice UNIQUE (requisito del `ON CONFLICT`; sin él el INSERT fallaba y la tabla quedó vacía meses).
 - El ROI del mensaje, el reporte semanal y la calibración dependen de `results`. `get_calibration_factors(sport, model_since)` solo usa picks resueltos de ese deporte y de su modelo vigente (90 días, ≥ 50 resueltos); hoy solo la usa fútbol. `_apply_calibration` recalcula el value (cuota real) o la cuota estimada para que cuota y probabilidad no queden inconsistentes.
+- La ventana de 7 días del ROI (mensaje y reporte semanal) va por **fecha de resolución** (`results.resolved_at`, `db._WINDOW_DATE`): un pick enviado hace 2 semanas y resuelto hoy cuenta. Los picks recientes del reporte siguen por `run_date`.
 - El rendimiento del mensaje diario y todo el reporte semanal (ROI, calibración, mejores/peores picks; `main._current_scope`) solo cuentan **deportes activos** y picks con `run_date` ≥ `MODEL_SINCE[deporte]` (`config.py`): al recalibrar un modelo, actualizar esa fecha. El bloque sale desde 1 pick resuelto, con aviso de muestra pequeña por debajo de `PERF_MIN_SAMPLE` (5).
 
 ## Telegram
-Parse mode **HTML** (no MarkdownV2). Mensajes > 3900 chars se parten. Kickoffs en hora ET (`fmt_ko`); conteos con `plural()`. El razonamiento NFL/NBA muestra `Modelo X% · mercado Y% → Z%` (Z = mezcla = confianza).
+Parse mode **HTML** (no MarkdownV2). Sin picks, el mensaje dice cuántos juegos se analizaron por deporte (`store.games_analyzed`, lo llenan los `get_*_picks`); "Sin partidos disponibles" solo cuando no hubo juegos. Mensajes > 3900 chars se parten. Kickoffs en hora ET (`fmt_ko`); conteos con `plural()`. El razonamiento NFL/NBA muestra `Modelo X% · mercado Y% → Z%` (Z = mezcla = confianza).
 
 ## Convenciones
 - Commits `tipo: descripción` (feat, fix, chore, test…); sin push salvo que se pida.

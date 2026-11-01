@@ -227,9 +227,17 @@ def _load_payload(raw: str | None) -> dict:
 
 # ── Análisis y ROI ────────────────────────────────────────────────
 
-def load_picks_df(days: int = 90):
+# Fecha que define la ventana de días: envío del pick o resolución (si no hay, el envío)
+_WINDOW_DATE = {
+    "run_date": "p.run_date",
+    "resolved": "COALESCE(date(r.resolved_at), p.run_date)",
+}
+
+
+def load_picks_df(days: int = 90, window: str = "run_date"):
     """
     Carga picks + results en un DataFrame (pandas) listo para análisis.
+    window: "run_date" (picks enviados en los últimos N días) o "resolved" (resueltos en ellos).
     Requiere pandas instalado. Si no está disponible retorna None.
     Retorna DataFrame vacío si las tablas aún no existen (primera ejecución).
     """
@@ -238,11 +246,11 @@ def load_picks_df(days: int = 90):
         return None
     try:
         with sqlite3.connect(DB_PATH) as conn:
-            df = pd.read_sql("""
+            df = pd.read_sql(f"""
                 SELECT p.*, r.outcome, r.profit_units
                 FROM picks p
                 LEFT JOIN results r ON r.pick_id = p.id
-                WHERE p.run_date >= date('now', ?)
+                WHERE {_WINDOW_DATE[window]} >= date('now', ?)
             """, conn, params=(f"-{days} days",))
         return df
     except Exception as exc:
@@ -266,13 +274,14 @@ def _scope_mask(df, sports, model_since: dict | None):
 
 def get_roi_summary(days: int = 30, sports=None, model_since: dict | None = None) -> dict:
     """
-    Métricas de rendimiento de los últimos N días.
-    Solo picks con outcome resuelto (win/loss), de `sports` (None = todos) y con
-    run_date ≥ model_since[sport] cuando el deporte tiene fecha de modelo.
+    Métricas de los picks resueltos en los últimos N días (por fecha de resolución: un
+    pick de hace 2 semanas cuyo juego se resolvió hoy cuenta; el runner es intermitente).
+    Solo outcome win/loss, de `sports` (None = todos) y con run_date ≥ model_since[sport]
+    cuando el deporte tiene fecha de modelo.
     Usa pandas si disponible, SQL puro como fallback.
     """
     if _PANDAS_OK:
-        df = load_picks_df(days)
+        df = load_picks_df(days, window="resolved")
         if df is None or df.empty or "outcome" not in df.columns:
             return {"error": "sin datos resueltos"}
         df = df[df["outcome"].isin(["win", "loss"]) & _scope_mask(df, sports, model_since)]
@@ -310,11 +319,11 @@ def get_roi_summary(days: int = 30, sports=None, model_since: dict | None = None
     else:
         # Fallback SQL puro
         with sqlite3.connect(DB_PATH) as conn:
-            rows = conn.execute("""
+            rows = conn.execute(f"""
                 SELECT p.sport, p.data_quality, r.outcome, r.profit_units, p.run_date
                 FROM picks p
                 JOIN results r ON r.pick_id = p.id
-                WHERE p.run_date >= date('now', ?)
+                WHERE {_WINDOW_DATE["resolved"]} >= date('now', ?)
                   AND r.outcome IN ('win', 'loss')
             """, (f"-{days} days",)).fetchall()
         rows = [r[:4] for r in rows if _in_scope(r[0], r[4], sports, model_since)]

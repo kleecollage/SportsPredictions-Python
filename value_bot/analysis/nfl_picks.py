@@ -6,6 +6,7 @@ from value_bot.config import MAX_PICKS_SPORT, MIN_CONFIDENCE, VALUE_THRESHOLD
 from value_bot.sports.nfl import get_league_average, get_nfl_games, get_team_scores
 
 from value_bot.db import already_sent_for_event
+from value_bot.store import store
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ def _already_sent(event_id: str | None, pick: dict) -> bool:
 
 def get_nfl_picks() -> list[dict]:
     scheduled = get_nfl_games()
+    store.games_analyzed["nfl"] = len(scheduled)
     games = [g for g in scheduled if is_pickable_week(g)]
     if len(games) < len(scheduled):
         log.info("NFL: %d juegos de semanas 1–2 sin picks (ratings con datos del año anterior)",

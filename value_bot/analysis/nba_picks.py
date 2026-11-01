@@ -6,6 +6,7 @@ from value_bot.analysis.nba_model import analyze_nba_game as analyze_nba_market
 from value_bot.config import MAX_PICKS_SPORT, MIN_CONFIDENCE, VALUE_THRESHOLD, nba_api_season
 from value_bot.db import already_sent_for_event
 from value_bot.sports.nba import get_best_nba_stats, get_nba_games
+from value_bot.store import store
 
 log = logging.getLogger(__name__)
 
@@ -37,8 +38,10 @@ def _already_sent(event_id: str | None, pick: dict) -> bool:
 
 
 def get_nba_picks() -> list[dict]:
+    games = get_nba_games()
+    store.games_analyzed["nba"] = len(games)
     all_picks = []
-    for game in get_nba_games():
+    for game in games:
         for pick in analyze_nba_game(game):
             if _already_sent(game.get("event_id"), pick):
                 log.info("NBA dedup BD: %s ya enviado para %s vs %s", pick["market"], game["home"], game["away"])

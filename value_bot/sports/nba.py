@@ -482,14 +482,17 @@ def _game(date_str: str, home: str, away: str, source: str, **extra) -> dict:
     }
 
 
+API_SPORTS_NOT_STARTED = "NS"
+
+
 def _api_sports_games(date_str: str) -> list[dict]:
-    """Fuente 1: api-sports basketball (sin juegos terminados ni cancelados)."""
+    """Fuente 1: api-sports basketball, solo juegos sin empezar (status NS)."""
     data = api_sports_get(ABB_BASE, "games", {
         "league": NBA_LEAGUE_ID, "season": nba_season(), "date": date_str,
     })
     games = []
     for g in data.get("response", [])[:8]:
-        if g.get("status", {}).get("short", "") in ("FT", "AOT", "CANC"):
+        if g.get("status", {}).get("short", "") != API_SPORTS_NOT_STARTED:
             continue
         home, away = g.get("teams", {}).get("home", {}), g.get("teams", {}).get("away", {})
         if home.get("id") and away.get("id"):

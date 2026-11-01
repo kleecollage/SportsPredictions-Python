@@ -49,7 +49,7 @@ def test_performance_block_says_it_covers_the_current_model_only():
     perf = {"total_picks": 6, "win_rate": 50.0, "roi_pct": -5.0, "total_profit": -0.3,
             "by_sport": {"nfl": {"win_rate": 50.0}}, "by_quality": {}}
     msg = ts.build_message([], [], [], perf=perf, nflp=[_nfl_pick()])
-    assert "RENDIMIENTO (7 días · modelo actual)" in msg
+    assert "RENDIMIENTO (resueltos en 7 días · modelo actual)" in msg
 
 
 # ── Robustez de fmt_ko (code review M1 / L1) ──────────────────────
@@ -92,7 +92,7 @@ def test_performance_block_hidden_without_resolved_picks():
 
 def test_weekly_report_labels_summary_as_current_model():
     msg = ts.build_weekly_report(_perf(3), [], [])
-    assert "Resumen general (7 días · modelo actual)" in msg
+    assert "Resumen general (resueltos en 7 días · modelo actual)" in msg
 
 
 def test_weekly_report_without_current_model_data_says_so():

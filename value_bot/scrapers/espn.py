@@ -35,8 +35,8 @@ def espn_parse_nba(event):
     if not comps:
         return None
     comp = comps[0]
-    status = comp.get("status", {}).get("type", {}).get("name", "")
-    if status in ("STATUS_FINAL", "STATUS_CANCELED", "STATUS_POSTPONED"):
+    # Solo juegos sin empezar: en vivo ESPN quita las líneas y el modelo es pre-partido
+    if comp.get("status", {}).get("type", {}).get("name", "") != "STATUS_SCHEDULED":
         return None
     competitors = comp.get("competitors", [])
     if len(competitors) < 2:

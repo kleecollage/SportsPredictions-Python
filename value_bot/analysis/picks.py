@@ -8,6 +8,7 @@ from value_bot.config import (
     LEAGUE_AVERAGES, LEAGUE_AVG_DEFAULT, MODEL_SINCE, est_odds, edge,
 )
 from value_bot.sports.football import collect_football_fixtures, build_football_stats, get_real_odds
+from value_bot.store import store
 
 log = logging.getLogger(__name__)
 
@@ -288,6 +289,7 @@ def _football_already_sent(pick: dict) -> bool:
 def get_football_picks():
     """v4.6: football picks with intelligent deduplication."""
     fixtures    = collect_football_fixtures()
+    store.games_analyzed["football"] = len(fixtures)
     stats       = build_football_stats(fixtures)
     all_picks   = []
     cal_factors = _get_cal("football", MODEL_SINCE.get("football")) if _DB_DEDUP else {}

@@ -145,10 +145,10 @@ def _game_block(group):
 
 
 def _performance_block(perf: dict) -> str:
-    """Genera el bloque HTML de rendimiento de los últimos 7 días."""
+    """Bloque HTML de rendimiento: picks resueltos en los últimos 7 días."""
     lines = [
         "━━━━━━━━━━━━━━━━━━━━━━",
-        "📈 <b>RENDIMIENTO (7 días · modelo actual)</b>",
+        "📈 <b>RENDIMIENTO (resueltos en 7 días · modelo actual)</b>",
         "━━━━━━━━━━━━━━━━━━━━━━",
         "",
         f"   🎯 Picks resueltos: <b>{perf['total_picks']}</b>  ·  Win rate: <b>{perf['win_rate']}%</b>",
@@ -180,7 +180,29 @@ def _performance_block(perf: dict) -> str:
     return "\n".join(lines)
 
 
-def build_message(fp, np, parlays, upcoming=None, perf=None, nflp=None):
+def _no_picks_block(analyzed: dict | None) -> list[str]:
+    """Sin picks: con juegos analizados dice cuántos; sin juegos, que no hubo partidos."""
+    counts = {sport: n for sport, n in (analyzed or {}).items() if n}
+    if not counts:
+        return [
+            "⚠️ <b>Sin partidos disponibles hoy</b>",
+            "",
+            "No se encontraron fixtures en las próximas 72h.",
+            "<i>El bot verificará automáticamente mañana.</i>",
+            "",
+        ]
+    noun = {"football": "partido"}
+    parts = [f"{SPORT_EMO.get(sport, '🎯')} {plural(n, noun.get(sport, 'juego'))}" for sport, n in counts.items()]
+    return [
+        "🔍 <b>Sin picks hoy</b>",
+        "",
+        f"Analizados: {'  ·  '.join(parts)}",
+        "<i>Ningún pick pasó los filtros de value contra el mercado.</i>",
+        "",
+    ]
+
+
+def build_message(fp, np, parlays, upcoming=None, perf=None, nflp=None, analyzed=None):
     now = datetime.now()
     ds  = f"{DAYS_ES[now.weekday()]}, {now.day} de {MONTHS_ES[now.month-1]} de {now.year}"
 
@@ -193,12 +215,7 @@ def build_message(fp, np, parlays, upcoming=None, perf=None, nflp=None):
 
     nflp = nflp or []
     if not fp and not np and not nflp:
-        lines += [
-            "⚠️ <b>Sin partidos disponibles hoy</b>",
-            "",
-            "No se encontraron fixtures en las próximas 72h.",
-            "<i>El bot verificará automáticamente mañana.</i>",
-        ]
+        lines += _no_picks_block(analyzed)
     else:
         total = len(fp) + len(np) + len(nflp)
         generated = "generado" if total == 1 else "generados"
@@ -327,7 +344,7 @@ def build_weekly_report(roi: dict, calib: list, recent: list) -> str:
         ]
     else:
         lines += [
-            f"🎯 <b>Resumen general ({roi['period_days']} días · modelo actual)</b>",
+            f"🎯 <b>Resumen general (resueltos en {roi['period_days']} días · modelo actual)</b>",
             f"   Picks resueltos: <b>{roi['total_picks']}</b>",
             f"   Win rate: <b>{roi['win_rate']}%</b>",
             f"   ROI: <b>{roi['roi_pct']:+.1f}%</b>  ·  Profit: <b>{roi['total_profit']:+.2f}u</b>",
