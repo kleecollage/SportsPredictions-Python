@@ -3,8 +3,7 @@
 
 class DataStore:
     def __init__(self):
-        # Playwright Capa 4 — populados por run_playwright_scrapers()
-        self.pw_nba_games: list = []
+        # Playwright Capa 4 (fútbol) — populado por run_playwright_scrapers()
         self.pw_football_fixtures: list = []
 
         # NBA API caches
@@ -33,7 +32,6 @@ class DataStore:
         self.nba_form_down = False
         self.nfl_scores_cache.clear()
         self.nfl_team_ids = []
-        self.pw_nba_games = []
         self.pw_football_fixtures = []
         self.games_analyzed = {}
         # odds_cache se puede reutilizar dentro del mismo run pero no entre días

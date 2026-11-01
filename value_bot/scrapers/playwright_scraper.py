@@ -72,17 +72,6 @@ async def _accept_cookies(page) -> None:
             pass
 
 
-async def _infinite_scroll(page, iters: int = 3) -> None:
-    prev = 0
-    for _ in range(iters):
-        curr = await page.evaluate("document.body.scrollHeight")
-        if curr == prev:
-            break
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        await _human_delay(900, 1800)
-        prev = curr
-
-
 def _parse_flashscore_item(item) -> dict | None:
     """Parse a .event__match div from Flashscore HTML."""
     time_el = item.select_one(".event__time")

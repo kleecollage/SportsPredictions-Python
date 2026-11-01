@@ -6,7 +6,7 @@ multi-sport betting prediction bot built with Claude Cowork. It automatically ge
 🏆 Value Bot Pro v4.6 — Multi-Deporte + Playwright Stealth
 ══════════════════════════════════════════════════════════════════
 CAMBIOS v4.3 vs v4.2:
-  ✅ Playwright stealth scraping  → Capa 4 (Flashscore NBA + Fútbol)
+  ✅ Playwright stealth scraping  → Capa 4 (Flashscore Fútbol)
   ✅ Anti-detección avanzada       → User-agent rotation, navigator.webdriver=undefined
   ✅ Delays human-like             → random 0.8-2.5s entre acciones
   ✅ Interceptación de requests    → bloqueo de imagen/font/media (velocidad)

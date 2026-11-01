@@ -1,5 +1,4 @@
-"""Flashscore scrapers (Capa 4) y run_playwright_scrapers con browser compartido."""
-import asyncio
+"""Flashscore scrapers de fútbol (Capa 4) y run_playwright_scrapers."""
 import logging
 from datetime import datetime
 
@@ -8,7 +7,7 @@ from value_bot.store import store
 from value_bot.scrapers.playwright_scraper import (
     BS4_OK, PLAYWRIGHT_OK,
     _build_stealth_browser, _human_delay, _accept_cookies,
-    _infinite_scroll, _parse_flashscore_item,
+    _parse_flashscore_item,
 )
 
 try:
@@ -24,29 +23,6 @@ _FOOTBALL_TARGETS = [
     ("Brasileirao",       "🇧🇷", "https://www.flashscore.com/football/brazil/serie-a/"),
     ("Copa Libertadores", "🌎", "https://www.flashscore.com/football/south-america/copa-libertadores/"),
 ]
-
-
-async def _scrape_nba_with_context(context) -> list:
-    """NBA scraping usando un context Playwright ya creado."""
-    url = "https://www.flashscore.com/basketball/usa/nba/"
-    games = []
-    page = await context.new_page()
-    try:
-        await page.goto(url, timeout=PLAYWRIGHT_TIMEOUT, wait_until="domcontentloaded")
-        await _human_delay(2500, 5000)
-        await _accept_cookies(page)
-        await _infinite_scroll(page, iters=3)
-        html = await page.content()
-    finally:
-        await page.close()
-
-    soup = BeautifulSoup(html, "lxml")
-    for item in soup.select(".event__match"):
-        m = _parse_flashscore_item(item)
-        if m:
-            games.append({**m, "source": "flashscore_pw"})
-    log.info("Flashscore NBA: %d partidos", len(games))
-    return games
 
 
 async def _scrape_football_with_context(context) -> list:
@@ -103,23 +79,6 @@ async def _scrape_football_with_context(context) -> list:
     return all_fix
 
 
-async def scrape_flashscore_nba() -> list:
-    """API pública — abre su propio browser. Usar solo fuera de run_playwright_scrapers."""
-    if not (PLAYWRIGHT_OK and PLAYWRIGHT_ENABLED and BS4_OK):
-        return []
-    from playwright.async_api import async_playwright
-    try:
-        async with async_playwright() as p:
-            browser, context = await _build_stealth_browser(p)
-            try:
-                return await _scrape_nba_with_context(context)
-            finally:
-                await browser.close()
-    except Exception as exc:
-        log.warning("scrape_flashscore_nba standalone: %s", exc)
-        return []
-
-
 async def scrape_flashscore_football() -> list:
     """API pública — abre su propio browser. Usar solo fuera de run_playwright_scrapers."""
     if not (PLAYWRIGHT_OK and PLAYWRIGHT_ENABLED and BS4_OK):
@@ -137,13 +96,8 @@ async def scrape_flashscore_football() -> list:
         return []
 
 
-async def run_playwright_scrapers(nba: bool = True, football: bool = True) -> None:
-    """
-    Ejecuta los scrapers pedidos (NBA y/o fútbol) con un único browser compartido.
-    Popula store.pw_nba_games y store.pw_football_fixtures.
-    """
-    if not (nba or football):
-        return
+async def run_playwright_scrapers() -> None:
+    """Scrapea los fixtures de fútbol de Flashscore y popula store.pw_football_fixtures."""
     if not (PLAYWRIGHT_OK and PLAYWRIGHT_ENABLED):
         log.info("Playwright: no disponible/desactivado → Capa 4 saltada")
         return
@@ -152,28 +106,15 @@ async def run_playwright_scrapers(nba: bool = True, football: bool = True) -> No
         log.warning("Playwright: bs4/lxml no instalado → Capa 4 saltada")
         return
 
-    log.info("Playwright: iniciando scrapers con browser compartido...")
+    log.info("Playwright: iniciando scraper de fútbol...")
     from playwright.async_api import async_playwright
     try:
         async with async_playwright() as p:
             browser, context = await _build_stealth_browser(p)
-            jobs = {"NBA": _scrape_nba_with_context, "Football": _scrape_football_with_context}
-            wanted = [name for name, on in (("NBA", nba), ("Football", football)) if on]
             try:
-                results = await asyncio.gather(*(jobs[name](context) for name in wanted),
-                                               return_exceptions=True)
+                store.pw_football_fixtures = await _scrape_football_with_context(context)
             finally:
                 await browser.close()
-
-        for name, res in zip(wanted, results):
-            if not isinstance(res, list):
-                log.warning("Playwright %s falló: %s", name, res)
-            elif name == "NBA":
-                store.pw_nba_games = res
-            else:
-                store.pw_football_fixtures = res
-
-        log.info("Playwright completo → NBA:%d Fútbol:%d",
-                 len(store.pw_nba_games), len(store.pw_football_fixtures))
+        log.info("Playwright completo → Fútbol:%d", len(store.pw_football_fixtures))
     except Exception as exc:
         log.warning("run_playwright_scrapers: %s", exc)

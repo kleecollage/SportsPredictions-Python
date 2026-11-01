@@ -97,7 +97,7 @@ async def main() -> None:
     # Capa 4 fútbol: Playwright antes de generar picks. La de NBA se abre bajo demanda
     # dentro de get_nba_games, solo si ESPN / api-sports / BBC no dieron juegos.
     if SPORTS_ENABLED.get("football"):
-        await run_playwright_scrapers(nba=False, football=True)
+        await run_playwright_scrapers()
 
     picks = await _collect_picks()
     football_picks, nba_picks, nfl_picks = picks["football"], picks["nba"], picks["nfl"]

@@ -206,9 +206,9 @@ def test_only_the_nba_finals_headline_counts_as_finals(headline, expected):
     assert espn._is_nba_finals(headline) is expected
 
 
-# ── M6: Playwright solo para los deportes activos ─────────────────
+# ── Playwright: solo fútbol (NBA ya no lo usa) ────────────────────
 
-def test_playwright_runs_only_enabled_sports(monkeypatch):
+def test_playwright_scrapes_only_football(monkeypatch):
     ran = []
 
     class _Ctx:
@@ -219,19 +219,19 @@ def test_playwright_runs_only_enabled_sports(monkeypatch):
         async def close(self): pass
 
     async def fake_build(_p): return _Browser(), object()
-    async def fake_nba(_c): ran.append("nba"); return [{"home": "A", "away": "B"}]
-    async def fake_football(_c): ran.append("football"); return []
+    async def fake_football(_c): ran.append("football"); return [{"home": "A", "away": "B"}]
 
     import playwright.async_api
     monkeypatch.setattr(playwright.async_api, "async_playwright", lambda: _Ctx())
     monkeypatch.setattr(flashscore, "PLAYWRIGHT_OK", True)
     monkeypatch.setattr(flashscore, "PLAYWRIGHT_ENABLED", True)
     monkeypatch.setattr(flashscore, "_build_stealth_browser", fake_build)
-    monkeypatch.setattr(flashscore, "_scrape_nba_with_context", fake_nba)
     monkeypatch.setattr(flashscore, "_scrape_football_with_context", fake_football)
 
-    asyncio.run(flashscore.run_playwright_scrapers(nba=True, football=False))
-    assert ran == ["nba"] and store.pw_nba_games == [{"home": "A", "away": "B"}]
+    asyncio.run(flashscore.run_playwright_scrapers())
+    assert ran == ["football"] and store.pw_football_fixtures == [{"home": "A", "away": "B"}]
+    assert not hasattr(flashscore, "_scrape_nba_with_context")
+    assert not hasattr(store, "pw_nba_games")
 
 
 # ── H1: respuestas con esquema inesperado no tumban la corrida ────

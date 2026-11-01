@@ -1,10 +1,9 @@
-"""ESPN Hidden API, BBC Sport scraping, and ESPN Playwright fallback."""
+"""ESPN Hidden API para juegos NBA (con líneas DraftKings)."""
 import logging
 from datetime import datetime, timedelta
 
-from value_bot.config import ESPN_NBA_URL, http_get, PLAYWRIGHT_ENABLED
+from value_bot.config import ESPN_NBA_URL, http_get
 from value_bot.scrapers.espn_lines import parse_lines
-from value_bot.scrapers.playwright_scraper import PLAYWRIGHT_OK, _build_stealth_browser, _human_delay
 
 
 log = logging.getLogger(__name__)
@@ -73,45 +72,3 @@ def get_upcoming_nba_events(days=5):
         if upcoming:
             break
     return upcoming[:3]
-
-
-async def scrape_espn_nba_pw() -> dict:
-    """ESPN fallback via Playwright with XHR interception."""
-    if not (PLAYWRIGHT_OK and PLAYWRIGHT_ENABLED):
-        return {}
-    from playwright.async_api import async_playwright
-    captured: dict = {}
-    try:
-        async with async_playwright() as p:
-            browser, context = await _build_stealth_browser(p)
-            page = await context.new_page()
-
-            async def _capture(response):
-                if ("site.api.espn.com" in response.url and
-                        "nba" in response.url.lower()):
-                    try:
-                        data = await response.json()
-                        if data.get("events"):
-                            captured.update(data)
-                    except Exception:
-                        pass
-
-            page.on("response", _capture)
-            try:
-                from value_bot.config import PLAYWRIGHT_TIMEOUT
-                await page.goto(
-                    "https://www.espn.com/nba/scoreboard",
-                    timeout=PLAYWRIGHT_TIMEOUT,
-                    wait_until="domcontentloaded",
-                )
-                await _human_delay(4000, 7000)
-            finally:
-                await page.close()
-            await browser.close()
-    except Exception as exc:
-        log.warning("scrape_espn_nba_pw: %s", exc)
-
-    if captured:
-        log.info("ESPN NBA playwright: %d eventos interceptados",
-                 len(captured.get("events", [])))
-    return captured
