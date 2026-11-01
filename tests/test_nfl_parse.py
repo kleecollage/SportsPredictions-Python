@@ -330,3 +330,43 @@ def test_parse_week_and_season_type():
 
 def test_parse_without_week_leaves_it_unknown():
     assert parse_espn_nfl_event(_event())["week"] is None
+
+
+# ── Review nfl.py L2 / L3 ─────────────────────────────────────────
+
+def test_failed_scoreboard_is_logged_not_taken_as_an_empty_day(monkeypatch, caplog):
+    monkeypatch.setattr(nfl, "http_get", lambda url, params=None: {})
+    monkeypatch.setattr(nfl, "fetch_team_ids", lambda: ["9", "6"])
+    with caplog.at_level(logging.WARNING):
+        assert nfl.get_nfl_games() == []
+    assert "scoreboard sin respuesta" in caplog.text
+
+
+def test_day_without_games_is_not_a_failure(monkeypatch, caplog):
+    monkeypatch.setattr(nfl, "http_get", lambda url, params=None: {"events": []})
+    monkeypatch.setattr(nfl, "fetch_team_ids", lambda: ["9", "6"])
+    with caplog.at_level(logging.WARNING):
+        assert nfl.get_nfl_games() == []
+    assert "scoreboard sin respuesta" not in caplog.text
+
+
+def test_team_ids_skip_malformed_entries(monkeypatch):
+    data = {"sports": [{"leagues": [{"teams": [
+        "garbage", {"team": None}, {"team": {"id": 9}}, {"nope": 1}, {"team": {"id": "6"}}]}]}]}
+    monkeypatch.setattr(nfl, "http_get", lambda url, params=None: data)
+    assert nfl.fetch_team_ids() == ["9", "6"]
+
+
+def test_team_ids_tolerate_malformed_payload(monkeypatch):
+    for data in ({"sports": None}, {"sports": ["x"]}, {"sports": [{"leagues": [None]}]}, []):
+        monkeypatch.setattr(nfl, "http_get", lambda url, params=None, d=data: d)
+        assert nfl.fetch_team_ids() == []
+
+
+@pytest.mark.parametrize("body", [None, "no events here", ["events"], 42])
+def test_scoreboard_that_is_not_an_object_counts_as_failed(monkeypatch, caplog, body):
+    monkeypatch.setattr(nfl, "http_get", lambda url, params=None: body)
+    monkeypatch.setattr(nfl, "fetch_team_ids", lambda: ["9", "6"])
+    with caplog.at_level(logging.WARNING):
+        assert nfl.get_nfl_games() == []
+    assert "scoreboard sin respuesta" in caplog.text

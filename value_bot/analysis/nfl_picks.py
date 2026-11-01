@@ -22,6 +22,12 @@ def _rating(team_id: str | None, league_avg: float) -> dict:
                        previous=team.previous)
 
 
+def _has_data(rating: dict) -> bool:
+    """Sin juegos (ni de la temporada anterior) el rating es la media de liga: el modelo
+    solo vería la localía y empujaría underdogs locales con value ficticio."""
+    return bool(rating["games"] or rating["previous_games"])
+
+
 def _already_sent(event_id: str | None, pick: dict) -> bool:
     """
     Un pick por partido y mercado aunque el juego aparezca en varias corridas, y
@@ -51,6 +57,9 @@ def get_nfl_picks() -> list[dict]:
     for game in games:
         home_rating = _rating(game["home_id"], avg)
         away_rating = _rating(game["away_id"], avg)
+        if not (_has_data(home_rating) and _has_data(away_rating)):
+            log.info("NFL %s vs %s: sin marcadores de ambos equipos → sin picks", game["home"], game["away"])
+            continue
         for pick in analyze_nfl_game(game, home_rating, away_rating, avg,
                                      min_conf=MIN_CONFIDENCE, value_threshold=VALUE_THRESHOLD):
             if _already_sent(game.get("event_id"), pick):

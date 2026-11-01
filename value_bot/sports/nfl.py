@@ -43,6 +43,12 @@ def _et_date(kickoff: str) -> str:
         return str(kickoff)[:10]
 
 
+def _first(data, key: str):
+    """Primer elemento de la lista data[key]; None si falta o no tiene esa forma."""
+    items = data.get(key) if isinstance(data, dict) else None
+    return items[0] if isinstance(items, list) and items else None
+
+
 def _record(competitor: dict) -> str:
     recs = competitor.get("records") or []
     first = recs[0] if recs and isinstance(recs[0], dict) else {}
@@ -133,8 +139,11 @@ def espn_query_dates(now: datetime, days_ahead: int) -> list[str]:
     return [(today_et + timedelta(days=d)).strftime("%Y%m%d") for d in range(days_ahead + 1)]
 
 
-def _parse_board(data: dict, date_str: str) -> list[dict]:
+def _parse_board(data, date_str: str) -> list[dict]:
     """Eventos de un día; un evento mal formado se loguea y se salta sin tirar el resto."""
+    if not isinstance(data, dict) or "events" not in data:  # {} = http_get falló, no un día sin juegos
+        log.warning("NFL %s: scoreboard sin respuesta → los juegos de ese día no se analizan", date_str)
+        return []
     board_season_type = _obj(data, "season").get("type")
     games = []
     for event in data.get("events") or []:
@@ -161,6 +170,7 @@ def get_nfl_games() -> list[dict]:
 
 
 def _fetch_scores(team_id: str, season: int) -> list[tuple[float, float]] | None:
+    """Solo temporada regular, también en enero–febrero: los playoffs no entran al rating."""
     data = http_get(
         ESPN_NFL_SCHEDULE_URL.format(team_id=team_id),
         params={"season": season, "seasontype": REGULAR_SEASON},
@@ -201,10 +211,13 @@ def get_team_scores(team_id: str) -> TeamScores:
 
 
 def fetch_team_ids() -> list[str]:
-    """IDs ESPN de los 32 equipos; [] si el request falla."""
-    data = http_get(ESPN_NFL_TEAMS_URL)
-    leagues = (data.get("sports") or [{}])[0].get("leagues") or [{}]
-    return [str(t["team"]["id"]) for t in leagues[0].get("teams", []) if _obj(t, "team").get("id")]
+    """IDs ESPN de los 32 equipos; [] si el request falla o la respuesta no tiene la forma esperada."""
+    league = _first(_first(http_get(ESPN_NFL_TEAMS_URL), "sports"), "leagues")
+    teams = league.get("teams") if isinstance(league, dict) else None
+    if not isinstance(teams, list):
+        return []
+    ids = (_obj(t, "team").get("id") for t in teams)
+    return [str(team_id) for team_id in ids if team_id]
 
 
 def get_team_ids() -> list[str]:

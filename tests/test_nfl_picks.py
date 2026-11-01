@@ -143,3 +143,30 @@ def test_early_season_only_slate_does_not_fetch_stats(monkeypatch):
     monkeypatch.setattr(nfl_picks, "get_league_average",
                         lambda: pytest.fail("no debe pedir la media sin juegos elegibles"))
     assert nfl_picks.get_nfl_picks() == []
+
+
+# ── Sin datos de un equipo no hay pick (review nfl.py M1) ─────────
+
+@pytest.mark.parametrize("empty_id", ["13", None])
+def test_game_with_a_team_without_any_scores_produces_no_picks(wired, monkeypatch, empty_id):
+    def scores(tid):
+        if tid == "13":
+            return TeamScores([], current=False)          # calendario no se pudo leer
+        return TeamScores([(24.0, 20.0)] * 6, current=True)
+    monkeypatch.setattr(nfl_picks, "get_team_scores", scores)
+    games = [_game("Kansas City Chiefs", "Las Vegas Raiders", "12", empty_id or "13"),
+             _game("Green Bay Packers", "Dallas Cowboys", "9", "6")]
+    if empty_id is None:
+        games[0]["away_id"] = None
+    monkeypatch.setattr(nfl_picks, "get_nfl_games", lambda: games)
+
+    picks = nfl_picks.get_nfl_picks()
+    assert [c["home"] for c in wired] == ["Green Bay Packers"]
+    assert all(p["home"] != "Kansas City Chiefs" for p in picks)
+
+
+def test_team_with_only_previous_season_scores_still_counts(wired, monkeypatch):
+    monkeypatch.setattr(nfl_picks, "get_team_scores",
+                        lambda tid: TeamScores([], current=False, previous=((24.0, 20.0),) * 17))
+    nfl_picks.get_nfl_picks()
+    assert len(wired) == 2
