@@ -58,6 +58,7 @@ Sin deportes activos, `main()` sale sin scrapear ni enviar (y sin resolver resul
 - Máx 3 picks/partido; value bet = edge ≥ 0.04 con cuota real (The Odds API).
 - Sin stats de ambos equipos → **sin picks** (ya no se usan promedios de liga ni el "Over 1.5" de respaldo).
 - Dedup: mismo pick (local, visitante, tipo) para la misma fecha del partido (`payload.date`) en cualquier corrida (`db.already_sent_for_game`), **antes** del tope `MAX_PICKS_SPORT`.
+- Capa 4 Flashscore (`scrapers/flashscore.py`): MLS, Brasileirão y Libertadores; cada fixture toma bandera, `odds_key` (cuota real de The Odds API) y temporada de `FALLBACK_LEAGUES_FOOTBALL`, y `kickoff` en ET de la hora HH:MM. Solo entran items con hora HH:MM (sin terminados ni en vivo); si todos los items vienen sin texto en `.event__time` se loguea warning de selector roto (venía vacío en oct-2026: la capa puede no aportar); si traen estado (Finished, en vivo) es solo `info` (liga sin partidos hoy, p. ej. fuera de temporada). Una liga que falla no tumba las demás.
 - football-data.org free: solo PL, PD, BL1, SA, FL1, CL, WC, BSA, PPL (MLS/Liga MX → 403); 10 req/min (sleep 7 s). api-football: header `x-apisports-key`, 100 req/día.
 
 ## NBA (`sports/nba.py`, `analysis/nba_model.py`, `analysis/nba_picks.py`)
@@ -102,5 +103,5 @@ Parse mode **HTML** (no MarkdownV2). Sin picks, el mensaje dice cuántos juegos 
 
 ## Pendientes conocidos
 - Resolución de picks de fútbol.
-- Mundial 2026 sigue en ligas de respaldo y Flashscore aunque ya terminó (gasta cuota de api-football si entra el fallback).
+- Mundial 2026 sigue en las ligas de respaldo de api-football (`FALLBACK_LEAGUES_FOOTBALL`; ya no en Flashscore) aunque ya terminó (gasta cuota de api-football si entra el fallback).
 - `picks_history.db` cambia en cada corrida → aparece modificado en git.

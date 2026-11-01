@@ -94,8 +94,7 @@ async def main() -> None:
     init_db()
     _resolve_results()
 
-    # Capa 4 fútbol: Playwright antes de generar picks. La de NBA se abre bajo demanda
-    # dentro de get_nba_games, solo si ESPN / api-sports / BBC no dieron juegos.
+    # Capa 4 fútbol: Playwright antes de generar picks (NBA ya no usa Playwright)
     if SPORTS_ENABLED.get("football"):
         await run_playwright_scrapers()
 

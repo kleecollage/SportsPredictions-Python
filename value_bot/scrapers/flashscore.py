@@ -1,8 +1,9 @@
 """Flashscore scrapers de fútbol (Capa 4) y run_playwright_scrapers."""
 import logging
-from datetime import datetime
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
-from value_bot.config import PLAYWRIGHT_ENABLED, PLAYWRIGHT_TIMEOUT
+from value_bot.config import FALLBACK_LEAGUES_FOOTBALL, PLAYWRIGHT_ENABLED, PLAYWRIGHT_TIMEOUT, afl_season
 from value_bot.store import store
 from value_bot.scrapers.playwright_scraper import (
     BS4_OK, PLAYWRIGHT_OK,
@@ -10,90 +11,97 @@ from value_bot.scrapers.playwright_scraper import (
     _parse_flashscore_item,
 )
 
-try:
-    from bs4 import BeautifulSoup
-except ImportError:
-    pass
-
 log = logging.getLogger(__name__)
 
+FLASHSCORE_TZ = ZoneInfo("America/New_York")  # la del browser (_build_stealth_browser)
+
+# Nombre = clave de FALLBACK_LEAGUES_FOOTBALL (bandera, cuota de The Odds API y temporada)
 _FOOTBALL_TARGETS = [
-    ("Mundial 2026",      "🌍", "https://www.flashscore.com/football/world/world-cup-2026/"),
-    ("MLS",               "🇺🇸", "https://www.flashscore.com/football/usa/mls/"),
-    ("Brasileirao",       "🇧🇷", "https://www.flashscore.com/football/brazil/serie-a/"),
-    ("Copa Libertadores", "🌎", "https://www.flashscore.com/football/south-america/copa-libertadores/"),
+    ("MLS",               "https://www.flashscore.com/football/usa/mls/"),
+    ("Brasileirao",       "https://www.flashscore.com/football/brazil/serie-a/"),
+    ("Copa Libertadores", "https://www.flashscore.com/football/south-america/copa-libertadores/"),
 ]
 
 
-async def _scrape_football_with_context(context) -> list:
-    """Football scraping usando un context Playwright ya creado."""
-    all_fix = []
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    first = True
+def _build_fixture(league: str, info: dict, match: dict, today: date) -> dict:
+    """Fixture de la Capa 4 con la info de la liga; la hora HH:MM de Flashscore es de hoy en ET."""
+    hour, minute = map(int, match["time"].split(":"))
+    kickoff = datetime(today.year, today.month, today.day, hour, minute, tzinfo=FLASHSCORE_TZ)
+    return {
+        "sport": "football",
+        "league": league,
+        "flag": info.get("flag", ""),
+        "fd_code": None,
+        "afl_lid": None,
+        "afl_season": afl_season(info),
+        "odds_key": info.get("odds"),
+        "date": today.isoformat(),
+        "kickoff": kickoff.isoformat(),
+        "home": match["home"],
+        "away": match["away"],
+        "home_id_fd": None,
+        "away_id_fd": None,
+        "home_id_afl": None,
+        "away_id_afl": None,
+        "source": "flashscore_pw",
+    }
 
-    for league_name, flag, url in _FOOTBALL_TARGETS:
-        page = await context.new_page()
+
+async def _league_html(context, url: str, accept_cookies: bool) -> str:
+    page = await context.new_page()
+    try:
+        await page.goto(url, timeout=PLAYWRIGHT_TIMEOUT, wait_until="domcontentloaded")
+        await _human_delay(1800, 4000)
+        if accept_cookies:
+            await _accept_cookies(page)
+        for _ in range(2):
+            await page.evaluate("window.scrollBy(0, 1500)")
+            await _human_delay(700, 1300)
+        return await page.content()
+    finally:
+        await page.close()
+
+
+def _log_no_matches(league: str, items: list) -> None:
+    """Sin estado en ningún item = selector roto; con estado (Finished, 45'…) = liga sin partidos hoy."""
+    with_status = sum(1 for it in items
+                      if (el := it.select_one(".event__time")) and el.get_text(strip=True))
+    if with_status:
+        log.info("Flashscore %s: %d items, sin partidos por jugar hoy (resultados/en vivo/otros días)",
+                 league, len(items))
+    else:
+        log.warning("Flashscore %s: %d items, todos sin hora (¿selector .event__time roto?)",
+                    league, len(items))
+
+
+def _parse_league(html: str, league: str, today: date) -> list:
+    from bs4 import BeautifulSoup
+    items = BeautifulSoup(html, "lxml").select(".event__match")
+    matches = [m for m in map(_parse_flashscore_item, items) if m]
+    if items and not matches:
+        _log_no_matches(league, items)
+    info = FALLBACK_LEAGUES_FOOTBALL[league]
+    return [_build_fixture(league, info, m, today) for m in matches]
+
+
+async def _scrape_football_with_context(context) -> list:
+    """Football scraping usando un context Playwright ya creado; una liga que falla no tumba las demás."""
+    all_fix = []
+    today = datetime.now(FLASHSCORE_TZ).date()
+
+    for i, (league, url) in enumerate(_FOOTBALL_TARGETS):
+        if i:
+            await _human_delay(800, 2000)   # pausa solo entre ligas
         try:
-            await page.goto(url, timeout=PLAYWRIGHT_TIMEOUT, wait_until="domcontentloaded")
-            await _human_delay(1800, 4000)
-            if first:
-                await _accept_cookies(page)
-                first = False
-            for _ in range(2):
-                await page.evaluate("window.scrollBy(0, 1500)")
-                await _human_delay(700, 1300)
-            html = await page.content()
-            soup = BeautifulSoup(html, "lxml")
-            count = 0
-            for item in soup.select(".event__match"):
-                m = _parse_flashscore_item(item)
-                if not m:
-                    continue
-                all_fix.append({
-                    "sport": "football",
-                    "league": league_name,
-                    "flag": flag,
-                    "fd_code": None,
-                    "afl_lid": None,
-                    "afl_season": 2026,
-                    "odds_key": None,
-                    "date": today_str,
-                    "kickoff": "",
-                    "home": m["home"],
-                    "away": m["away"],
-                    "home_id_fd": None,
-                    "away_id_fd": None,
-                    "home_id_afl": None,
-                    "away_id_afl": None,
-                    "source": "flashscore_pw",
-                })
-                count += 1
-            log.info("Flashscore %s: %d fixtures", league_name, count)
+            html = await _league_html(context, url, accept_cookies=(i == 0))
+            fixtures = _parse_league(html, league, today)
+            all_fix.extend(fixtures)
+            log.info("Flashscore %s: %d fixtures", league, len(fixtures))
         except Exception as exc:
-            log.warning("Flashscore %s: %s", league_name, exc)
-        finally:
-            await page.close()
-        await _human_delay(800, 2000)
+            log.warning("Flashscore %s: %s", league, exc)
 
     log.info("Flashscore Football total: %d fixtures", len(all_fix))
     return all_fix
-
-
-async def scrape_flashscore_football() -> list:
-    """API pública — abre su propio browser. Usar solo fuera de run_playwright_scrapers."""
-    if not (PLAYWRIGHT_OK and PLAYWRIGHT_ENABLED and BS4_OK):
-        return []
-    from playwright.async_api import async_playwright
-    try:
-        async with async_playwright() as p:
-            browser, context = await _build_stealth_browser(p)
-            try:
-                return await _scrape_football_with_context(context)
-            finally:
-                await browser.close()
-    except Exception as exc:
-        log.warning("scrape_flashscore_football standalone: %s", exc)
-        return []
 
 
 async def run_playwright_scrapers() -> None:
