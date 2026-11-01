@@ -179,8 +179,9 @@ def test_event_dedup_is_per_sport(temp_db):
 
 def _patch_slate(monkeypatch, pick):
     monkeypatch.setattr(nba_picks, "get_nba_games", lambda: [GAME])
-    monkeypatch.setattr(nba_picks, "get_best_nba_stats", lambda g: (_stats(1, 1), _stats(1, 1), {}, {}))
+    monkeypatch.setattr(nba_picks, "get_best_nba_stats", lambda g: (_stats(1, 1), _stats(1, 1), {}))
     monkeypatch.setattr(nba_picks, "analyze_nba_market", lambda *a, **k: [pick])
+    monkeypatch.setattr(nba_picks, "nba_get_team_form", lambda name: {})  # sin red
 
 
 def test_side_bet_already_sent_blocks_the_other_side_market(temp_db, monkeypatch):

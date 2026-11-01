@@ -149,7 +149,7 @@ def test_form_without_league_stats_is_not_enough(monkeypatch):
 
 
 def test_game_without_stats_produces_no_picks(monkeypatch):
-    monkeypatch.setattr(nba_picks, "get_best_nba_stats", lambda g: ({}, {}, {}, {}))
+    monkeypatch.setattr(nba_picks, "get_best_nba_stats", lambda g: ({}, {}, {}))
     game = {"home": "Boston Celtics", "away": "Chicago Bulls", "home_record": "2-2", "away_record": "1-3",
             "lines": {"home_ml": 1.5, "away_ml": 2.6}}
     assert nba_picks.analyze_nba_game(game) == []
@@ -174,7 +174,6 @@ def sources(monkeypatch):
     monkeypatch.setattr(nba, "api_sports_get", lambda *a, **k: {"response": feed["api"]})
     monkeypatch.setattr(nba, "espn_nba_games", lambda d: feed["espn"])
     monkeypatch.setattr(nba, "espn_parse_nba", lambda ev: ev)
-    monkeypatch.setattr(nba, "scrape_bbc_sport_nba", lambda: [])
     return feed
 
 
@@ -266,18 +265,18 @@ def _wire_best_stats(monkeypatch, base_season, split_season):
     split = {"ppg": 108.0, "opp_ppg": 110.0, "gp": 41, "season": split_season}
     monkeypatch.setattr(nba, "nba_get_team_full_stats", lambda name: dict(base))
     monkeypatch.setattr(nba, "nba_get_home_away_splits", lambda name, loc, season=None: dict(split))
-    monkeypatch.setattr(nba, "_is_nba_playoffs_month", lambda: False)
+    monkeypatch.setattr(nba, "nba_get_team_form", lambda name: {})
 
 
 def test_splits_from_previous_season_are_not_mixed_with_current_stats(monkeypatch):
     _wire_best_stats(monkeypatch, base_season="2026-27", split_season="2025-26")
-    _, _, splits, _ = nba.get_best_nba_stats({"home": "Atlanta Hawks", "away": "Cleveland Cavaliers"})
+    _, _, splits = nba.get_best_nba_stats({"home": "Atlanta Hawks", "away": "Cleveland Cavaliers"})
     assert splits == {}
 
 
 def test_splits_of_the_same_season_are_used(monkeypatch):
     _wire_best_stats(monkeypatch, base_season="2026-27", split_season="2026-27")
-    _, _, splits, _ = nba.get_best_nba_stats({"home": "Atlanta Hawks", "away": "Cleveland Cavaliers"})
+    _, _, splits = nba.get_best_nba_stats({"home": "Atlanta Hawks", "away": "Cleveland Cavaliers"})
     assert splits["home"]["ppg"] == 108.0 and splits["away"]["ppg"] == 108.0
 
 
@@ -297,42 +296,6 @@ def test_unknown_team_form_is_cached(caplog):
         nba.nba_get_team_form("Springfield Atoms")
         nba.nba_get_team_form("Springfield Atoms")
     assert sum("no encontrado" in r.message for r in caplog.records) == 1
-
-
-# ── L3: Flashscore NBA solo cuando las otras fuentes no dan juegos ─
-
-def test_flashscore_nba_runs_only_when_other_sources_are_empty(sources, monkeypatch):
-    calls = []
-    monkeypatch.setattr(nba, "_flashscore_nba_games",
-                        lambda: calls.append(1) or [{"home": "Boston Celtics", "away": "Chicago Bulls", "time": "19:30"}])
-    sources["espn"] = [_espn("Boston Celtics", "Chicago Bulls")]
-    assert len(nba.get_nba_games()) == 1 and calls == []
-
-    sources["espn"] = []
-    games = nba.get_nba_games()
-    assert calls and [g["source"] for g in games] == ["flashscore_pw"]
-
-
-
-# ── Review 3 · H1: Flashscore sin hora = no es un juego de hoy ────
-
-@pytest.mark.parametrize("time_txt, kept", [
-    ("19:30", True), ("7:05", True),
-    ("", False), ("30.10. 19:30", False), ("Final", False), ("FT", False), ("25:99", False),
-])
-def test_flashscore_items_need_a_valid_today_time(sources, monkeypatch, time_txt, kept):
-    monkeypatch.setattr(nba, "_flashscore_nba_games",
-                        lambda: [{"home": "Boston Celtics", "away": "Chicago Bulls", "time": time_txt}])
-    games = nba.get_nba_games()
-    assert (len(games) == 1) is kept
-
-
-def test_flashscore_list_of_finished_and_future_games_produces_nothing(sources, monkeypatch):
-    # Caso real 29-oct-2026: 34 items sin hora (resultados recientes + próximos días)
-    junk = [{"home": "Miami Heat", "away": "Indiana Pacers", "time": ""},
-            {"home": "Atlanta Hawks", "away": "Miami Heat", "time": ""}]
-    monkeypatch.setattr(nba, "_flashscore_nba_games", lambda: junk)
-    assert nba.get_nba_games() == []
 
 
 # ── Review 3 · M1: splits solo de la temporada de las stats base ──
@@ -364,26 +327,6 @@ def test_best_stats_ask_splits_for_each_team_base_season(monkeypatch):
                         lambda name: {"ppg": 115.0, "opp_ppg": 112.0, "source": "nba_api", "season": seasons[name]})
     monkeypatch.setattr(nba, "nba_get_home_away_splits",
                         lambda name, loc, season=None: asked.append((name, season)) or {})
-    monkeypatch.setattr(nba, "_is_nba_playoffs_month", lambda: False)
+    monkeypatch.setattr(nba, "nba_get_team_form", lambda name: {})
     nba.get_best_nba_stats({"home": "Atlanta Hawks", "away": "Cleveland Cavaliers"})
     assert asked == [("Atlanta Hawks", "2026-27"), ("Cleveland Cavaliers", "2025-26")]
-
-
-# ── Review 3 · L2: sin warning de corrutina desde un loop activo ──
-
-def test_flashscore_inside_running_loop_returns_empty_without_creating_coroutine(monkeypatch):
-    created = []
-
-    async def _empty():
-        return []
-
-    def fake_scrape():  # registra cuándo se CREA la corrutina, no cuándo corre
-        created.append(1)
-        return _empty()
-
-    monkeypatch.setattr(nba, "scrape_flashscore_nba", fake_scrape)
-
-    async def inside():
-        return nba._flashscore_nba_games()
-
-    assert asyncio.run(inside()) == [] and created == []

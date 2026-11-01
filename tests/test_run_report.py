@@ -32,7 +32,7 @@ def test_analyzed_count_uses_singular():
 
 def test_nba_picks_records_how_many_games_were_analyzed(monkeypatch):
     store.clear_run_caches()
-    monkeypatch.setattr(nba_picks, "get_nba_games", lambda: [{"home": "A", "away": "B"}] * 3)
+    monkeypatch.setattr(nba_picks, "get_nba_games", lambda: [{"home": "A", "away": "B", "lines": {"home_ml": 1.8}}] * 3)
     monkeypatch.setattr(nba_picks, "analyze_nba_game", lambda g: [])
     nba_picks.get_nba_picks()
     assert store.games_analyzed == {"nba": 3}

@@ -1,17 +1,11 @@
 """ESPN Hidden API, BBC Sport scraping, and ESPN Playwright fallback."""
 import logging
-import requests
 from datetime import datetime, timedelta
 
 from value_bot.config import ESPN_NBA_URL, http_get, PLAYWRIGHT_ENABLED
 from value_bot.scrapers.espn_lines import parse_lines
 from value_bot.scrapers.playwright_scraper import PLAYWRIGHT_OK, _build_stealth_browser, _human_delay
 
-try:
-    from bs4 import BeautifulSoup
-    BS4_OK = True
-except ImportError:
-    BS4_OK = False
 
 log = logging.getLogger(__name__)
 
@@ -79,32 +73,6 @@ def get_upcoming_nba_events(days=5):
         if upcoming:
             break
     return upcoming[:3]
-
-
-def scrape_bbc_sport_nba():
-    if not BS4_OK:
-        return []
-    try:
-        r = requests.get(
-            "https://www.bbc.com/sport/basketball/nba",
-            headers={"User-Agent": "Mozilla/5.0"}, timeout=10,
-        )
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, "html.parser")
-        games = []
-        for fix in soup.find_all(attrs={"data-testid": "fixture"})[:6]:
-            teams = fix.find_all(attrs={"data-testid": "team-name"})
-            if len(teams) >= 2:
-                games.append({
-                    "home": teams[0].get_text(strip=True),
-                    "away": teams[1].get_text(strip=True),
-                    "kickoff": "",
-                })
-        log.info("BBC scrape NBA: %d", len(games))
-        return games
-    except Exception as exc:
-        log.warning("BBC scrape error: %s", exc)
-        return []
 
 
 async def scrape_espn_nba_pw() -> dict:
