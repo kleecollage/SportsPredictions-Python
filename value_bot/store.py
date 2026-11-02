@@ -12,6 +12,7 @@ class DataStore:
         self.nba_splits_cache: dict = {}    # (team_name, location, season) → splits
         self.nba_api_down: bool = False     # tras un fallo de red no se insiste en la corrida
         self.nba_form_down: bool = False    # idem solo para la forma (dato de mensaje, no del modelo)
+        self.nba_slate_date: str | None = None  # día ET de los juegos NBA analizados (próximos = después)
 
         # NFL caches
         self.nfl_scores_cache: dict = {}    # team_id → [(pts_favor, pts_contra), ...]
@@ -30,6 +31,7 @@ class DataStore:
         self.nba_splits_cache.clear()
         self.nba_api_down = False
         self.nba_form_down = False
+        self.nba_slate_date = None
         self.nfl_scores_cache.clear()
         self.nfl_team_ids = []
         self.pw_football_fixtures = []

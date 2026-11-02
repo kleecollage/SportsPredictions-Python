@@ -11,7 +11,7 @@ from value_bot.config import (
     DAYS_AHEAD, api_sports_get, nba_season, nba_api_season,
 )
 from value_bot.store import store
-from value_bot.scrapers.espn import espn_nba_games, espn_parse_nba
+from value_bot.scrapers.espn import espn_nba_games, espn_parse_nba, now_et
 
 try:
     from nba_api.stats.static import teams as nba_static_teams
@@ -405,7 +405,12 @@ def _with_espn(games: list[dict], date_str: str) -> list[dict]:
     """
     result = list(games)
     for ev in espn_nba_games(date_str):
-        parsed = espn_parse_nba(ev)
+        try:
+            parsed = espn_parse_nba(ev)
+        except Exception as exc:   # un evento mal formado no tumba el slate
+            event_id = ev.get("id") if isinstance(ev, dict) else "?"
+            log.warning("ESPN NBA: evento %s ilegible (%s), se salta", event_id, exc)
+            continue
         if not parsed:
             continue
         espn_fields = {
@@ -424,18 +429,19 @@ def _with_espn(games: list[dict], date_str: str) -> list[dict]:
     return result
 
 
-def get_nba_games():
+def get_nba_games() -> list[dict]:
     """
     Juegos NBA del primer día (hoy … hoy + DAYS_AHEAD) con datos: api-sports + ESPN.
     Sin ESPN no hay líneas y sin líneas no hay picks, así que ya no se cae a BBC ni a
     Flashscore (solo inflaban el conteo de analizados y abrían Chromium).
     """
-    today = datetime.now()
+    today = now_et()   # el día de ESPN y de api-sports (timezone America/New_York)
     games: list[dict] = []
     for day_offset in range(DAYS_AHEAD + 1):
         date_str = (today + timedelta(days=day_offset)).strftime("%Y-%m-%d")
         games = _with_espn(_api_sports_games(date_str), date_str)
         if games:
+            store.nba_slate_date = date_str
             break
     if not games:
         log.warning("NBA: ESPN y api-sports sin juegos programados en %d días", DAYS_AHEAD + 1)

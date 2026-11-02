@@ -40,6 +40,17 @@ def _safe_picks(sport: str) -> list:
         return []
 
 
+def _upcoming() -> list:
+    """Sección informativa "Próximos partidos": si falla, el mensaje sale sin ella."""
+    if not SPORTS_ENABLED.get("nba"):
+        return []
+    try:
+        return get_upcoming_nba_events()
+    except Exception:
+        log.exception("Próximos partidos NBA fallaron → mensaje sin esa sección")
+        return []
+
+
 async def _collect_picks() -> dict[str, list]:
     """Picks de los deportes activos en paralelo; {deporte: [...]} con [] para los apagados."""
     loop = asyncio.get_running_loop()
@@ -103,7 +114,7 @@ async def main() -> None:
 
     all_picks = football_picks + nba_picks + nfl_picks
     parlays   = build_parlays(all_picks)
-    upcoming  = get_upcoming_nba_events() if SPORTS_ENABLED.get("nba") else []
+    upcoming  = _upcoming()
     perf      = _current_performance()
     message   = build_message(football_picks, nba_picks, parlays, upcoming, perf=perf, nflp=nfl_picks,
                               analyzed=dict(store.games_analyzed))
