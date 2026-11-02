@@ -202,8 +202,9 @@ def test_parse_tolerates_null_nested_fields():
     comp["competitors"][0]["records"] = None
     game = parse_espn_nfl_event(event)
     assert game["venue"] == "" and game["home_record"] == ""
-    assert "provider" not in game["lines"] and "home_ml" not in game["lines"]
-    assert game["lines"]["away_ml"] == pytest.approx(1.893, abs=0.001)
+    assert "provider" not in game["lines"]
+    assert not {"home_ml", "away_ml"} & game["lines"].keys()   # un lado solo no es mercado
+    assert game["lines"]["home_spread"] == 1.5
 
 
 def test_parse_null_status_is_not_scheduled():
@@ -246,25 +247,28 @@ def test_parse_lines_uses_open_when_close_lacks_odds():
     event = _event()
     ml = event["competitions"][0]["odds"][0]["moneyline"]
     ml["home"] = {"close": {"odds": None}, "open": {"odds": "+140"}}
-    assert parse_espn_nfl_event(event)["lines"]["home_ml"] == pytest.approx(2.4)
+    ml["away"] = {"close": {"odds": "-112"}, "open": {"odds": "-160"}}
+    lines = parse_espn_nfl_event(event)["lines"]
+    assert (lines["home_ml"], lines["away_ml"]) == pytest.approx((2.4, 1.625), abs=0.001)   # ambos de open
 
 
 def test_parse_lines_keeps_line_and_odds_from_the_same_snapshot():
     event = _event()
     spread = event["competitions"][0]["odds"][0]["pointSpread"]
     spread["home"] = {"close": {"line": "+2.5"}, "open": {"line": "+1.5", "odds": "-110"}}
+    spread["away"] = {"close": {"line": "-2.5", "odds": "+102"}, "open": {"line": "-1.5", "odds": "-110"}}
     lines = parse_espn_nfl_event(event)["lines"]
     assert lines["home_spread"] == 1.5
-    assert lines["home_spread_odds"] == pytest.approx(1.909, abs=0.001)
+    assert (lines["home_spread_odds"], lines["away_spread_odds"]) == pytest.approx((1.909, 1.909), abs=0.001)
 
 
-def test_parse_lines_merges_fields_when_no_snapshot_is_complete():
+def test_parse_lines_drops_spread_when_no_snapshot_is_complete():
+    # Antes mezclaba la línea de close con la cuota de open: no es un mercado real
     event = _event()
     spread = event["competitions"][0]["odds"][0]["pointSpread"]
     spread["home"] = {"close": {"line": "+2.5"}, "open": {"odds": "-110"}}
     lines = parse_espn_nfl_event(event)["lines"]
-    assert lines["home_spread"] == 2.5
-    assert lines["home_spread_odds"] == pytest.approx(1.909, abs=0.001)
+    assert not {"home_spread", "home_spread_odds", "away_spread_odds"} & lines.keys()
 
 
 # ── Prefijos o/u en mayúscula (review #6) ─────────────────────────
@@ -274,6 +278,7 @@ def test_parse_total_with_uppercase_prefix():
     odds = event["competitions"][0]["odds"][0]
     del odds["overUnder"]
     odds["total"]["over"]["close"]["line"] = "O 47.5"
+    odds["total"]["under"]["close"]["line"] = "U 47.5"
     assert parse_espn_nfl_event(event)["lines"]["total"] == 47.5
 
 

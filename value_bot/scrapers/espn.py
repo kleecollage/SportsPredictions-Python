@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from value_bot.config import ESPN_NBA_URL, http_get
-from value_bot.scrapers.espn_lines import obj, parse_lines
+from value_bot.scrapers.espn_lines import first_obj, obj, parse_lines
 from value_bot.store import store
 
 
@@ -38,12 +38,6 @@ def _is_nba_finals(headline: str) -> bool:
     return "nba finals" in (headline or "").lower()
 
 
-def _first_obj(items: object) -> dict:
-    """Primer elemento de una lista ESPN como dict; {} si falta o es null."""
-    first = items[0] if isinstance(items, list) and items else None
-    return first if isinstance(first, dict) else {}
-
-
 def _sides(comp: dict) -> tuple[dict, dict] | None:
     """(local, visitante) solo si ESPN marca exactamente uno de cada uno; nunca por orden."""
     competitors = [c for c in (comp.get("competitors") or []) if isinstance(c, dict)]
@@ -55,12 +49,12 @@ def _sides(comp: dict) -> tuple[dict, dict] | None:
 
 
 def _record(competitor: dict) -> str:
-    return _first_obj(competitor.get("records")).get("summary") or "?"
+    return first_obj(competitor.get("records")).get("summary") or "?"
 
 
 def espn_parse_nba(event: object) -> dict | None:
     """Juego sin empezar con local, visitante y líneas; None si el evento no es confiable."""
-    comp = _first_obj(event.get("competitions") if isinstance(event, dict) else None)
+    comp = first_obj(event.get("competitions") if isinstance(event, dict) else None)
     # Solo juegos sin empezar: en vivo ESPN quita las líneas y el modelo es pre-partido
     if obj(obj(comp, "status"), "type").get("name") != "STATUS_SCHEDULED":
         return None
@@ -72,7 +66,7 @@ def espn_parse_nba(event: object) -> dict | None:
         return None
     home, away = sides
 
-    series_txt = _first_obj(comp.get("notes")).get("headline") or ""
+    series_txt = first_obj(comp.get("notes")).get("headline") or ""
     return {
         "event_id":       str(event.get("id") or ""),
         "lines":          parse_lines(comp),
