@@ -1,4 +1,6 @@
+import asyncio
 import json
+import logging
 from datetime import date, datetime, timezone
 
 import pytest
@@ -200,6 +202,107 @@ def test_get_predictions_fetches_current_round(monkeypatch):
     assert matches_params["Sport"] == "NFL" and matches_params["best_bets"] == "true"
 
 
-def test_get_predictions_empty_on_network_failure(monkeypatch):
+OPTIONS = [{"Active": True, "Round_Date": "2026-10-20", "Round_Number": 6, "Year": 2026}]
+
+
+def test_get_predictions_failure_is_none_and_warned(monkeypatch, caplog):
+    # http_get → {} cuando la red falla: no es "sin semana activa"
     monkeypatch.setattr(dimers, "http_get", lambda *a, **k: {})
+    assert dimers.get_dimers_nfl_predictions(now=NOW) is None
+    assert "/round/options sin respuesta" in caplog.text
+    assert "sin semana activa" not in caplog.text
+
+
+def test_get_predictions_matches_failure_is_none(monkeypatch, caplog):
+    monkeypatch.setattr(dimers, "http_get", lambda url, **k: OPTIONS if url.endswith("options") else {})
+    assert dimers.get_dimers_nfl_predictions(now=NOW) is None
+    assert "/round/matches" in caplog.text
+
+
+def test_get_predictions_without_active_round_is_empty_not_failure(monkeypatch, caplog):
+    monkeypatch.setattr(dimers, "http_get", lambda *a, **k: [])
+    with caplog.at_level(logging.INFO, logger=dimers.log.name):
+        assert dimers.get_dimers_nfl_predictions(now=NOW) == []
+    assert "sin semana activa" in caplog.text
+
+
+# ── fetch_dimers_nfl: Playwright solo si la API falló ─────────────
+
+def _fetch(monkeypatch, api_result):
+    launched = []
+
+    async def fake_pw(now=None):
+        launched.append(1)
+        return ["pw"]
+    monkeypatch.setattr(dimers, "get_dimers_nfl_predictions", lambda now=None: api_result)
+    monkeypatch.setattr(dimers, "scrape_dimers_nfl_pw", fake_pw)
+    return asyncio.run(dimers.fetch_dimers_nfl(NOW)), launched
+
+
+def test_empty_week_does_not_open_chromium(monkeypatch):
+    games, launched = _fetch(monkeypatch, [])
+    assert games == [] and not launched
+
+
+def test_api_failure_falls_back_to_playwright(monkeypatch):
+    games, launched = _fetch(monkeypatch, None)
+    assert games == ["pw"] and launched
+
+
+# ── Probabilidades fuera de 0–1 ───────────────────────────────────
+
+@pytest.mark.parametrize("win_prob", [52.4, 0, 1, -0.1])
+def test_bet_with_win_prob_outside_unit_interval_is_skipped(win_prob):
+    bet = {"type": "h2h", "bet": "home", "odds": 1.9, "winProb": win_prob}
+    assert parse_dimers_match(_match(bets=[bet]), now=NOW)["best_bets"] == []
+
+
+def test_market_prob_outside_unit_interval_is_dropped():
+    bet = {"type": "h2h", "bet": "home", "odds": 1.9, "winProb": 0.55, "marketProb": 49.0}
+    (parsed,) = parse_dimers_match(_match(bets=[bet]), now=NOW)["best_bets"]
+    assert parsed["market_prob"] is None and parsed["win_prob"] == 0.55
+
+
+# ── ng-state con otros atributos ──────────────────────────────────
+
+@pytest.mark.parametrize("tag", [
+    '<script type="application/json" id="ng-state">',
+    '<script id="ng-state" nonce="abc123" type="application/json">',
+])
+def test_ng_state_with_other_attribute_order(tag):
+    html = tag + json.dumps({"x/round/matches?y": {"body": [_match()]}}) + "</script>"
+    assert len(extract_matches_from_ng_state(html)) == 1
+
+
+def test_ng_state_does_not_match_other_scripts():
+    html = '<script id="ng-state-old">{}</script><script id="other">[1]</script>'
+    assert extract_matches_from_ng_state(html) == []
+
+
+# ── /round/options con otro esquema ───────────────────────────────
+
+def test_options_with_unknown_schema_is_a_failure_not_an_empty_week(monkeypatch, caplog):
+    renamed = [{"active": True, "roundDate": "2026-10-20", "round": 6, "year": 2026}] * 3
+    monkeypatch.setattr(dimers, "http_get", lambda *a, **k: renamed)
+    assert dimers.get_dimers_nfl_predictions(now=NOW) is None   # → se intenta Playwright
+    assert "formato desconocido" in caplog.text
+
+
+def test_options_with_some_readable_rounds_are_not_a_failure(monkeypatch, caplog):
+    past = [{"Active": True, "Round_Date": "2026-10-01", "Round_Number": 4, "Year": 2026}, "basura"]
+    monkeypatch.setattr(dimers, "http_get", lambda *a, **k: past)
     assert dimers.get_dimers_nfl_predictions(now=NOW) == []
+    assert "formato desconocido" not in caplog.text
+
+
+# ── Números no finitos ────────────────────────────────────────────
+
+def test_infinite_odds_are_skipped():
+    bet = {"type": "h2h", "bet": "home", "odds": "inf", "winProb": 0.5}
+    assert parse_dimers_match(_match(bets=[bet]), now=NOW)["best_bets"] == []
+
+
+def test_nan_line_is_none():
+    bet = {"type": "line", "bet": "home", "odds": 1.9, "winProb": 0.5, "lineValue": "NaN"}
+    (parsed,) = parse_dimers_match(_match(bets=[bet]), now=NOW)["best_bets"]
+    assert parsed["line"] is None

@@ -53,6 +53,11 @@ Sin deportes activos, `main()` sale sin scrapear ni enviar (y sin resolver resul
 - Quirks de ESPN: ver skill global `learned/espn-hidden-api-nfl` (rango de fechas → 400, días en hora ET, cuotas open/close, score string vs objeto). Además: campos anidados pueden venir `null` (usar `_obj`).
 - Líneas (`scrapers/espn_lines.py`, NFL y NBA): los **dos lados de cada mercado salen del mismo snapshot** (close; si en close falta un valor utilizable —línea, cuota válida— en cualquier lado, open; si tampoco, sin ese mercado; `_first_snapshot`) — mezclar cuotas de momentos distintos inventaba la prob. sin vig (85 % de la confianza). Spread con línea del visitante distinta de −local o total con línea del under distinta del over → sin ese mercado (datos raros: no se cae a open); `overUnder` del evento solo como línea de las cuotas de close. Un lado solo (p. ej. moneyline sin local) no es mercado. `odds` que no sea lista → `{}`; `to_float` rechaza NaN/inf.
 
+## Dimers NFL (`scrapers/dimers.py`) — **sin usar**
+- Predicciones y best bets de dimers.com (API JSON `levy-edge.statsinsider.com.au`, sin key; fallback Playwright leyendo `<script id="ng-state">`). Nada lo importa fuera de sus tests: no entra en picks.
+- `get_dimers_nfl_predictions`: `[]` = la API respondió sin partidos pendientes; `None` = falló (warning "sin respuesta", o "formato desconocido" si ninguna opción de `/round/options` es legible). `fetch_dimers_nfl` solo abre Chromium con `None`. Probabilidades fuera de (0, 1) y números no finitos se descartan.
+- Para conectarlo falta: emparejar equipos con ESPN por nombre exacto, confirmar el signo de `lineValue` del lado away contra `home_spread`, kickoff en ET y mezclar `win_prob` con el mercado (backtest antes de darle peso).
+
 ## Fútbol (lógica Poisson, `analysis/picks.py`)
 - Over/Under 2.5 y BTTS con Poisson sobre XG `(gf_propio + ga_rival)/2`; Under solo en ligas defensivas; BTTS no se combina con Under.
 - 1X2 con diff de fuerza ≥ 24 (logística), Doble Chance 12–23, Empate con diff ≤ 10 y draw_pct ≥ 26 %.
