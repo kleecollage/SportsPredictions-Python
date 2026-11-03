@@ -8,7 +8,7 @@ from datetime import datetime
 from value_bot.config import FLASHSCORE_ENABLED, MODEL_SINCE, SPORTS_ENABLED
 from value_bot.scrapers.playwright_scraper import PLAYWRIGHT_OK
 from value_bot.scrapers.flashscore import run_playwright_scrapers
-from value_bot.analysis.football_picks import get_football_picks
+from value_bot.analysis.football_picks import get_btts_picks, get_football_picks
 from value_bot.analysis.nba_picks import get_nba_picks
 from value_bot.analysis.nfl_picks import get_nfl_picks
 from value_bot.analysis.parlays import build_parlays
@@ -19,6 +19,7 @@ from value_bot.db import (
     get_model_calibration, get_parlay_summary, get_recent_picks, get_roi_summary, init_db, save_parlays, save_picks,
 )
 from value_bot.resolver import resolve_parlays, resolve_pending_picks
+from value_bot.tools.league_picker import LeagueOption, pick_leagues, render_decisions
 
 try:
     from value_bot.sports.nba import NBA_API_OK as _NBA_API_OK
@@ -29,6 +30,7 @@ log = logging.getLogger(__name__)
 
 
 PICK_SOURCES = {"football": get_football_picks, "nba": get_nba_picks, "nfl": get_nfl_picks}
+BTTS_FLAG = "--btts"   # BTTS gasta créditos por partido: solo a mano, nunca desde el scheduler
 
 
 def _safe_picks(sport: str) -> list:
@@ -38,6 +40,25 @@ def _safe_picks(sport: str) -> list:
     except Exception:
         log.exception("Picks %s fallaron → se envía el mensaje sin ese deporte", sport)
         return []
+
+
+def _choose_btts_leagues(counts: dict[str, int], credits_left: int | None) -> frozenset[str]:
+    options = [LeagueOption(league, n) for league, n in counts.items()]
+    return pick_leagues(options, credits_left)
+
+
+def _btts_picks(football_picks: list[dict], argv: list[str]) -> list[dict]:
+    """BTTS bajo demanda (`--btts`): selector de ligas en la terminal y árbol por partido."""
+    if BTTS_FLAG not in argv or not SPORTS_ENABLED.get("football"):
+        return []
+    try:
+        picks, decisions = get_btts_picks(football_picks, _choose_btts_leagues)
+    except Exception:
+        log.exception("BTTS bajo demanda falló → el mensaje sale sin BTTS")
+        return []
+    if decisions:
+        print(render_decisions(decisions))
+    return picks
 
 
 def _upcoming() -> list:
@@ -95,7 +116,8 @@ def _save_parlays(run_date: str, parlays: list) -> None:
         log.exception("Guardar parlays falló")
 
 
-async def main() -> None:
+async def main(argv: list[str] | None = None) -> None:
+    """`argv` con BTTS_FLAG abre el selector de BTTS (por defecto nunca: el scheduler no lo pasa)."""
     log.info("═══ Value Bot Pro v4.6 · Multi-Deporte + Playwright ═══")
     active_sports = [k for k, v in SPORTS_ENABLED.items() if v]
     log.info("Deportes activos: %s", active_sports)
@@ -115,6 +137,7 @@ async def main() -> None:
 
     picks = await _collect_picks()
     football_picks, nba_picks, nfl_picks = picks["football"], picks["nba"], picks["nfl"]
+    football_picks = football_picks + _btts_picks(football_picks, argv or [])
 
     all_picks = football_picks + nba_picks + nfl_picks
     parlays   = build_parlays(all_picks)
@@ -152,4 +175,4 @@ if __name__ == "__main__":
     if "--weekly" in sys.argv:
         asyncio.run(weekly_report())
     else:
-        asyncio.run(main())
+        asyncio.run(main(sys.argv[1:]))

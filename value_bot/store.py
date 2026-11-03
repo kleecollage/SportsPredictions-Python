@@ -29,6 +29,10 @@ class DataStore:
         # Juegos analizados por deporte en la corrida (para el mensaje sin picks)
         self.games_analyzed: dict = {}
 
+        # Fútbol de la corrida, para el paso BTTS bajo demanda (main --btts)
+        self.football_fixtures: list = []
+        self.football_stats: dict = {}
+
     def clear_run_caches(self):
         """Limpiar al inicio de cada run para evitar datos stale entre ejecuciones."""
         self.nba_league_cache.clear()
@@ -41,6 +45,8 @@ class DataStore:
         self.nfl_team_ids = []
         self.pw_football_fixtures = []
         self.games_analyzed = {}
+        self.football_fixtures = []
+        self.football_stats = {}
         self.afl_blocked = False
         # odds_cache se puede reutilizar dentro del mismo run pero no entre días
         self.odds_cache.clear()

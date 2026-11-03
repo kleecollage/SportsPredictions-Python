@@ -4,13 +4,15 @@ contra la BD. Sin calibración por historial: los picks ya están anclados al me
 """
 import logging
 from collections import defaultdict
+from collections.abc import Callable
 
+from value_bot.analysis.football_btts import Decision, btts_evaluate, btts_gate
 from value_bot.analysis.football_model import analyze_football_match as analyze_football_market
 from value_bot.analysis.football_model import is_pickable
 from value_bot.config import MAX_PICKS_SPORT, MIN_CONFIDENCE, VALUE_THRESHOLD
 from value_bot.db import already_sent_for_game
 from value_bot.sports.football import build_football_stats, collect_football_fixtures, side_stats
-from value_bot.sports.football_odds import get_real_odds
+from value_bot.sports.football_odds import ODDS_CREDITS_RESERVE, get_btts_odds, get_real_odds
 from value_bot.store import store
 
 log = logging.getLogger(__name__)
@@ -52,6 +54,7 @@ def get_football_picks() -> list[dict]:
     fixtures = collect_football_fixtures()
     store.games_analyzed["football"] = len(fixtures)
     stats = build_football_stats(fixtures)
+    store.football_fixtures, store.football_stats = list(fixtures), dict(stats)
     all_picks = []
     for fix in fixtures:
         for pick in analyze_football_match(fix, side_stats(stats, fix, "home"), side_stats(stats, fix, "away")):
@@ -69,3 +72,64 @@ def get_football_picks() -> list[dict]:
     log.info("Football picks: %d (de %d fixtures, %d candidatos)", len(picks), len(fixtures), len(all_picks))
     return picks
 
+
+# ── BTTS bajo demanda (main --btts) ───────────────────────────────
+
+LeagueChooser = Callable[[dict[str, int], int | None], set[str] | frozenset[str]]
+
+
+def _btts_gate(fix: dict, selected: set[str] | frozenset[str], taken: set[tuple[str, str]],
+               credits_left: int | None) -> tuple[Decision, str | None]:
+    """Árbol antes del gasto para un fixture de la corrida (las cuotas 1X2 ya están en caché)."""
+    hs, as_ = side_stats(store.football_stats, fix, "home"), side_stats(store.football_stats, fix, "away")
+    found: list[str | None] = []
+
+    def find_event() -> str | None:
+        real = get_real_odds(fix.get("odds_key", ""), fix["home"], fix["away"], date=fix.get("date") or None) or {}
+        found.append(real.get("odds_event_id"))
+        return found[-1]
+
+    sent = (fix["home"], fix["away"]) in taken or _already_sent(fix)
+    gate = btts_gate(fix, hs, as_, selected=selected, sent_before=sent, find_event=find_event,
+                     credits_left=credits_left, reserve=ODDS_CREDITS_RESERVE)
+    return gate, (found[-1] if found else None)
+
+
+def _btts_cap_reached(fix: dict, n_current: int, picks: list[dict]) -> str | None:
+    """Motivo si otro BTTS superaría MAX_PICKS_SPORT o MAX_PICKS_LEAGUE_TYPE (antes de gastar)."""
+    if n_current + len(picks) >= MAX_PICKS_SPORT:
+        return f"tope de {MAX_PICKS_SPORT} picks de fútbol → skip"
+    if sum(p.get("league") == fix.get("league") for p in picks) >= MAX_PICKS_LEAGUE_TYPE:
+        return f"tope de {MAX_PICKS_LEAGUE_TYPE} BTTS en la liga → skip"
+    return None
+
+
+def get_btts_picks(current: list[dict], choose_leagues: LeagueChooser) -> tuple[list[dict], list[Decision]]:
+    """
+    BTTS de las ligas que elija `choose_leagues({liga: partidos que pedirían cuota}, créditos)`,
+    con los fixtures y stats de get_football_picks. Los partidos de `current` (picks de esta
+    corrida) no se repiten y los topes (MAX_PICKS_SPORT con `current`, MAX_PICKS_LEAGUE_TYPE
+    BTTS por liga) se revisan antes de gastar. Devuelve (picks, árbol de cada partido elegido).
+    """
+    fixtures = store.football_fixtures
+    taken = {(p["home"], p["away"]) for p in current}
+    leagues = {f.get("league", "") for f in fixtures}
+    counts = {lg: sum(_btts_gate(f, leagues, taken, None)[0].spend for f in fixtures if f.get("league", "") == lg)
+              for lg in dict.fromkeys(f.get("league", "") for f in fixtures)}
+    selected = choose_leagues(counts, store.odds_credits_left)
+    picks, decisions = [], []
+    for fix in (f for f in fixtures if f.get("league", "") in selected):
+        if cap := _btts_cap_reached(fix, len(current), picks):
+            decisions.append(Decision(f"{fix['home']} vs {fix['away']}", fix.get("league", ""), (cap,)))
+            continue
+        decision, event_id = _btts_gate(fix, selected, taken, store.odds_credits_left)
+        if decision.spend:
+            odds = get_btts_odds(fix.get("odds_key", ""), event_id)
+            decision = btts_evaluate(decision, fix, odds, MIN_CONFIDENCE, VALUE_THRESHOLD)
+        decisions.append(decision)
+        if decision.pick:
+            picks.append({**fix, **decision.pick})
+        if decision.stop:
+            break
+    log.info("BTTS bajo demanda: %d picks de %d partidos evaluados", len(picks), len(decisions))
+    return picks, decisions
