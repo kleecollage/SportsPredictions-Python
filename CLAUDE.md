@@ -20,7 +20,7 @@ Analista senior de apuestas multi-deporte. Genera picks + parlays diarios y los 
 | Deporte | Estado | Fuentes |
 |---|---|---|
 | 🏈 NFL | ✅ activo | ESPN hidden API (juegos, líneas DraftKings, marcadores) — sin key |
-| ⚽ Fútbol | ⛔ desactivado | football-data.org → api-football → The Odds API → Playwright Flashscore |
+| ⚽ Fútbol | ✅ activo (2-nov-2026) | football-data.org (fixtures + tablas; único que da la temporada actual) → api-football (plan Free: solo 2022-2024 → hoy no aporta) → The Odds API (1X2) → Playwright Flashscore |
 | 🏀 NBA | ✅ activo (29-oct-2026) | juegos: api-sports + ESPN (líneas DraftKings); stats: nba_api → api-sports |
 
 Sin deportes activos, `main()` sale sin scrapear ni enviar (y sin resolver resultados). Playwright de fútbol corre antes de los picks si fútbol está activo; NBA ya no usa Playwright ni BBC (sin ESPN no hay líneas y sin líneas no hay picks). Cada deporte corre aislado (`main._collect_picks` / `_safe_picks`): si uno revienta se loguea y el mensaje sale con los demás.
@@ -67,6 +67,9 @@ Sin deportes activos, `main()` sale sin scrapear ni enviar (y sin resolver resul
 - Sin stats de ambos equipos → **sin picks** (ya no se usan promedios de liga ni el "Over 1.5" de respaldo sin stats).
 - Dedup: mismo pick (local, visitante, tipo) para la misma fecha del partido (`payload.date`) en cualquier corrida (`db.already_sent_for_game`), **antes** del tope `MAX_PICKS_SPORT`.
 - Capa 4 Flashscore (`scrapers/flashscore.py`): MLS, Brasileirão y Libertadores; cada fixture toma bandera, `odds_key` (cuota real de The Odds API) y temporada de `FALLBACK_LEAGUES_FOOTBALL`, y `kickoff` en ET de la hora HH:MM. Solo entran items con hora HH:MM (sin terminados ni en vivo); si todos los items vienen sin texto en `.event__time` se loguea warning de selector roto (venía vacío en oct-2026: la capa puede no aportar); si traen estado (Finished, en vivo) es solo `info` (liga sin partidos hoy, p. ej. fuera de temporada). Una liga que falla no tumba las demás.
+- Ligas top (`TOP_LEAGUES_FOOTBALL`): Premier League, LaLiga, Bundesliga, Serie A, Ligue 1, Champions League y Europa League. Partidos del primer día con partidos en los próximos `DAYS_AHEAD` (3), hasta `max_fixtures` por liga (jornada completa: Premier y LaLiga 10, Champions 18) o `MAX_FIXTURES_LEAGUE` (4). Cada liga: football-data.org si tiene `fd` y hay token (`_fd_fixtures`), si no api-football (`_afl_fixtures`).
+- **api-football plan Free (verificado 2-nov-2026): solo temporadas 2022-2024** ("Free plans do not have access to this season"). Si responde `errors` se loguea warning por liga y se corta (no se prueban los demás días). Consecuencias: la Europa League (sin `fd`; en football-data da 403) no trae partidos; las ligas de respaldo (MLS, Liga MX, Libertadores…) y las stats por nombre de Flashscore tampoco. Con el plan actual el fútbol depende de football-data: Premier/LaLiga solo entran cuando su jornada cae dentro de los 3 días.
+- Fila de Europa League en `LEAGUE_AVERAGES` aproximada (el modelo solo usa `style` y `draw_pct`). Tests en `tests/test_football_leagues.py`.
 - football-data.org free: solo PL, PD, BL1, SA, FL1, CL, WC, BSA, PPL (MLS/Liga MX → 403); 10 req/min (sleep 7 s). api-football: header `x-apisports-key`, 100 req/día.
 
 ## NBA (`sports/nba.py`, `analysis/nba_model.py`, `analysis/nba_picks.py`)

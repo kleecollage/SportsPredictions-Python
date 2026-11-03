@@ -43,7 +43,7 @@ ESPN_NFL_TEAMS_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl
 
 # ── Sports toggles ────────────────────────────────────────────────
 SPORTS_ENABLED = {
-    "football": False,
+    "football": True,
     "nba":      True,
     "nfl":      True,
 }
@@ -54,6 +54,7 @@ SPORTS_ENABLED = {
 MODEL_SINCE = {
     "nfl": "2026-10-19",  # recalibración por backtest (peso 0.15, totales apagados)
     "nba": "2026-10-31",  # picks solo contra líneas ESPN, lado por EV (nba_model)
+    "football": "2026-11-02",  # reactivado tras el refactor (Premier, LaLiga, Champions)
 }
 
 # ── Thresholds ────────────────────────────────────────────────────
@@ -136,12 +137,16 @@ STEALTH_SCRIPT = """
 
 # ── Football leagues ──────────────────────────────────────────────
 TOP_LEAGUES_FOOTBALL = {
-    "Premier League":   {"fd": "PL",  "afl": 39,  "flag": "🏴󠁧󠁢󠁥󠁮󠁧󠁿", "odds": "soccer_epl"},
-    "LaLiga":           {"fd": "PD",  "afl": 140, "flag": "🇪🇸", "odds": "soccer_spain_la_liga"},
+    # max_fixtures: jornada completa (football-data trae todos los partidos y la tabla en 2 llamadas)
+    "Premier League":   {"fd": "PL",  "afl": 39,  "flag": "🏴󠁧󠁢󠁥󠁮󠁧󠁿", "odds": "soccer_epl", "max_fixtures": 10},
+    "LaLiga":           {"fd": "PD",  "afl": 140, "flag": "🇪🇸", "odds": "soccer_spain_la_liga", "max_fixtures": 10},
     "Bundesliga":       {"fd": "BL1", "afl": 78,  "flag": "🇩🇪", "odds": "soccer_germany_bundesliga"},
     "Serie A":          {"fd": "SA",  "afl": 135, "flag": "🇮🇹", "odds": "soccer_italy_serie_a"},
     "Ligue 1":          {"fd": "FL1", "afl": 61,  "flag": "🇫🇷", "odds": "soccer_france_ligue_one"},
-    "Champions League": {"fd": "CL",  "afl": 2,   "flag": "🏆", "odds": "soccer_uefa_champs_league"},
+    "Champions League": {"fd": "CL",  "afl": 2,   "flag": "🏆", "odds": "soccer_uefa_champs_league", "max_fixtures": 18},
+    # Sin "fd": el plan free de football-data.org no incluye la Europa League → solo api-football,
+    # cuyo plan Free solo da temporadas 2022-2024: hoy no trae partidos (warning en el log)
+    "Europa League":    {"afl": 3,   "flag": "🇪🇺", "odds": "soccer_uefa_europa_league"},
 }
 
 # season explícita solo para torneos puntuales; calendar_year = temporada = año natural
@@ -163,6 +168,8 @@ LEAGUE_AVERAGES: dict = {
     "Serie A":           {"avg_goals": 2.48, "btts_pct": 49, "home_win_pct": 44, "over25_pct": 47, "under25_pct": 53, "draw_pct": 28, "style": "defensive"},
     "Ligue 1":           {"avg_goals": 2.68, "btts_pct": 52, "home_win_pct": 46, "over25_pct": 52, "under25_pct": 48, "draw_pct": 25, "style": "balanced"},
     "Champions League":  {"avg_goals": 2.91, "btts_pct": 57, "home_win_pct": 43, "over25_pct": 58, "under25_pct": 42, "draw_pct": 25, "style": "attacking"},
+    # Aproximados (el modelo solo usa style y draw_pct)
+    "Europa League":     {"avg_goals": 2.80, "btts_pct": 53, "home_win_pct": 45, "over25_pct": 54, "under25_pct": 46, "draw_pct": 24, "style": "balanced"},
     "MLS":               {"avg_goals": 2.83, "btts_pct": 51, "home_win_pct": 46, "over25_pct": 55, "under25_pct": 45, "draw_pct": 23, "style": "attacking"},
     "Brasileirao":       {"avg_goals": 2.50, "btts_pct": 48, "home_win_pct": 48, "over25_pct": 47, "under25_pct": 53, "draw_pct": 25, "style": "defensive"},
     "Mundial 2026":      {"avg_goals": 2.55, "btts_pct": 50, "home_win_pct": 42, "over25_pct": 49, "under25_pct": 51, "draw_pct": 27, "style": "balanced"},

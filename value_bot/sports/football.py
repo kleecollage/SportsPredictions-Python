@@ -13,6 +13,8 @@ from value_bot.store import store
 
 log = logging.getLogger(__name__)
 
+MAX_FIXTURES_LEAGUE = 4   # partidos por liga si no fija max_fixtures (cuida la cuota de api-football)
+
 # ── Normalización de nombres Flashscore ───────────────────────────
 # Flashscore añade sufijos de país "(Bra)", "(Arg)", etc. y a veces
 # abrevia nombres que api-football espera completos.
@@ -150,6 +152,50 @@ def _parse_afl_fix(m, league, info, date):
     }
 
 
+def _fd_enabled() -> bool:
+    return bool(FOOTBALL_DATA_TOKEN) and FOOTBALL_DATA_TOKEN != "YOUR_FOOTBALL_DATA_TOKEN"
+
+
+def _fd_fixtures(name: str, info: dict, date_from: str, date_to: str) -> list[dict]:
+    """Partidos programados de football-data.org; [] sin token o si la liga no tiene código."""
+    if not (info.get("fd") and _fd_enabled()):
+        return []
+    data = fd_get(f"/competitions/{info['fd']}/matches",
+                  {"dateFrom": date_from, "dateTo": date_to, "status": "SCHEDULED"})
+    fixtures = []
+    for m in data.get("matches", [])[:info.get("max_fixtures", MAX_FIXTURES_LEAGUE)]:
+        h = m.get("homeTeam", {}); a = m.get("awayTeam", {})
+        if h.get("id") and a.get("id"):
+            fixtures.append({
+                "sport": "football", "league": name, "flag": info["flag"],
+                "fd_code": info["fd"], "afl_lid": info["afl"],
+                "afl_season": afl_season(info), "odds_key": info.get("odds"),
+                "date": (m.get("utcDate") or "")[:10],
+                "kickoff": m.get("utcDate", ""),
+                "home": h.get("name", "?"), "home_id_fd": h.get("id"),
+                "away": a.get("name", "?"), "away_id_fd": a.get("id"),
+                "source": "football-data",
+            })
+    return fixtures
+
+
+def _afl_fixtures(name: str, info: dict, today: datetime) -> list[dict]:
+    """Partidos de api-football del primer día (hoy … +DAYS_AHEAD) que tenga alguno."""
+    for d in range(DAYS_AHEAD + 1):
+        ds = (today + timedelta(days=d)).strftime("%Y-%m-%d")
+        raw = api_sports_get(AFL_BASE, "fixtures",
+                             {"league": info["afl"], "season": afl_season(info), "date": ds})
+        if raw.get("errors"):
+            # p. ej. el plan Free sin la temporada actual: los demás días darían lo mismo
+            log.warning("api-football %s: %s → sin partidos de esta liga", name, raw["errors"])
+            return []
+        cap = info.get("max_fixtures", MAX_FIXTURES_LEAGUE)
+        fixtures = [p for p in (_parse_afl_fix(m, name, info, ds) for m in raw.get("response", [])[:cap]) if p]
+        if fixtures:
+            return fixtures
+    return []
+
+
 def collect_football_fixtures():
 
     today     = datetime.now()
@@ -158,52 +204,12 @@ def collect_football_fixtures():
     fixtures  = []
 
     for name, info in TOP_LEAGUES_FOOTBALL.items():
-        found = False
-        if FOOTBALL_DATA_TOKEN and FOOTBALL_DATA_TOKEN != "YOUR_FOOTBALL_DATA_TOKEN":
-            data = fd_get(
-                f"/competitions/{info['fd']}/matches",
-                {"dateFrom": date_from, "dateTo": date_to, "status": "SCHEDULED"},
-            )
-            for m in data.get("matches", [])[:4]:
-                h = m.get("homeTeam", {}); a = m.get("awayTeam", {})
-                if h.get("id") and a.get("id"):
-                    fixtures.append({
-                        "sport": "football", "league": name, "flag": info["flag"],
-                        "fd_code": info["fd"], "afl_lid": info["afl"],
-                        "afl_season": afl_season(info), "odds_key": info.get("odds"),
-                        "date": (m.get("utcDate") or "")[:10],
-                        "kickoff": m.get("utcDate", ""),
-                        "home": h.get("name", "?"), "home_id_fd": h.get("id"),
-                        "away": a.get("name", "?"), "away_id_fd": a.get("id"),
-                        "source": "football-data",
-                    })
-                    found = True
-        if not found:
-            for d in range(DAYS_AHEAD + 1):
-                ds = (today + timedelta(days=d)).strftime("%Y-%m-%d")
-                raw = api_sports_get(AFL_BASE, "fixtures",
-                                     {"league": info["afl"], "season": afl_season(info), "date": ds})
-                for m in raw.get("response", [])[:4]:
-                    p = _parse_afl_fix(m, name, info, ds)
-                    if p:
-                        fixtures.append(p); found = True
-                if found:
-                    break
+        fixtures += _fd_fixtures(name, info, date_from, date_to) or _afl_fixtures(name, info, today)
 
     if len(fixtures) < MIN_FIXTURES_TOP:
         log.info("Pocas ligas top (%d). Activando fallback...", len(fixtures))
         for name, info in FALLBACK_LEAGUES_FOOTBALL.items():
-            found = False
-            for d in range(DAYS_AHEAD + 1):
-                if found:
-                    break
-                ds = (today + timedelta(days=d)).strftime("%Y-%m-%d")
-                raw = api_sports_get(AFL_BASE, "fixtures",
-                                     {"league": info["afl"], "season": afl_season(info), "date": ds})
-                for m in raw.get("response", [])[:4]:
-                    p = _parse_afl_fix(m, name, info, ds)
-                    if p:
-                        fixtures.append(p); found = True
+            fixtures += _afl_fixtures(name, info, today)
 
     # Capa 4: Playwright Flashscore
     if len(fixtures) < MIN_FIXTURES_TOP and store.pw_football_fixtures:
@@ -330,7 +336,7 @@ def build_football_stats(fixtures):
     stats = {}
 
     # ── Paso 1: football-data.org standings (fixtures con fd_code) ────────────
-    if FOOTBALL_DATA_TOKEN and FOOTBALL_DATA_TOKEN != "YOUR_FOOTBALL_DATA_TOKEN":
+    if _fd_enabled():
         for code in set(f["fd_code"] for f in fixtures if f.get("fd_code")):
             for section in fd_get(f"/competitions/{code}/standings").get("standings", []):
                 if section.get("type") != "TOTAL":
