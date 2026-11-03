@@ -67,6 +67,9 @@ MIN_FIXTURES_TOP = 3
 
 # ── Playwright ────────────────────────────────────────────────────
 PLAYWRIGHT_ENABLED = True
+# Capa 4 fútbol (Flashscore): apagada. El selector de hora viene vacío (nov-2026) y sus partidos
+# necesitan stats de api-football, que el plan Free no da para la temporada actual.
+FLASHSCORE_ENABLED = False
 PLAYWRIGHT_TIMEOUT = 30_000  # ms
 
 # ── Temporadas ────────────────────────────────────────────────────

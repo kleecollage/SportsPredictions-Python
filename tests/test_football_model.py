@@ -9,9 +9,9 @@ from value_bot.config import est_odds
 FIX = {"home": "Home FC", "away": "Away FC", "league": "Bundesliga"}
 
 
-def _stats(gf=1.5, ga=1.5, win=40, draw=25, form="WDLWD", form_pts=8):
+def _stats(gf=1.5, ga=1.5, win=40, draw=25, form="WDLWD", form_pts=8, played=10):
     return {"goals_for_pg": gf, "goals_against_pg": ga, "win_rate": win, "draw_rate": draw,
-            "form": form, "form_pts": form_pts}
+            "form": form, "form_pts": form_pts, "played": played}
 
 
 def _types(picks):
@@ -51,35 +51,74 @@ def test_btts_is_not_added_next_to_an_under():
     assert fm._btts_pick(m, []) and fm._btts_pick(m, [under]) == []
 
 
-# ── 1X2 y empate: cuota real ──────────────────────────────────────
+# ── 1X2 y empate: anclados al mercado sin vig ─────────────────────
 
 STRONG, WEAK = _stats(win=80, form_pts=15), _stats(win=10, form_pts=0)
+# Villarreal–PSG del 3-nov-2026: PSG 3-0-0 en Champions, modelo 74 %, mercado ~62 %
+PSG_MARKET = {"home_odds": 5.5, "draw_odds": 4.4, "away_odds": 1.52}
 
 
-def test_home_win_uses_real_odds_and_its_value():
-    pick = next(p for p in _analyze(STRONG, WEAK, real={"home_odds": 1.5}) if p["type"] == "Victoria Home FC")
-    assert pick["our_prob"] == 0.76                       # techo del local
-    assert (pick["est_odds"], pick["real_odds_source"]) == (1.5, True)
-    assert pick["value"] == pytest.approx(0.76 * 1.5 - 1, abs=1e-4)
+def _side(picks):
+    return [p for p in picks if p["type"].startswith(("Victoria", "Empate"))]
 
 
-def test_win_without_real_odds_is_dropped_by_its_estimated_odds():
-    # est_odds(0.76) = 1.25 < FOOTBALL_MIN_ODDS
-    assert not any(t.startswith("Victoria") for t in _types(_analyze(STRONG, WEAK)))
+def test_away_favourite_priced_by_the_market_is_not_a_value_bet():
+    # 0.15 × 74 % + 0.85 × 61.7 % = 63.5 % → EV −3.5 % a cuota 1.52
+    assert _side(_analyze(WEAK, STRONG, real=PSG_MARKET)) == []
 
 
-def test_away_win_needs_a_big_strength_gap():
-    picks = _analyze(WEAK, STRONG, real={"away_odds": 1.8})
-    assert "Victoria Away FC" in _types(picks)
+def test_side_pick_blends_model_with_no_vig_market_and_keeps_real_odds():
+    market = {"home_odds": 4.0, "draw_odds": 3.6, "away_odds": 2.0}
+    (pick,) = _side(_analyze(WEAK, STRONG, real=market))
+    no_vig = (1 / 2.0) / (1 / 4.0 + 1 / 3.6 + 1 / 2.0)
+    blended = round(0.15 * 0.74 + 0.85 * no_vig, 3)
+    assert pick["type"] == "Victoria Away FC"
+    assert (pick["our_prob"], pick["confidence"]) == (blended, int(blended * 100))
+    assert (pick["est_odds"], pick["real_odds_source"]) == (2.0, True)
+    assert pick["value"] == pytest.approx(blended * 2.0 - 1, abs=1e-4)
+    assert pick["reasoning"].startswith("Modelo 74% · mercado 48% → ")
 
 
-def test_draw_needs_even_teams_and_a_very_high_draw_rate():
+def test_value_bet_below_the_confidence_floor_is_kept():
+    market = {"home_odds": 4.0, "draw_odds": 3.6, "away_odds": 2.0}
+    (pick,) = _side(_analyze(WEAK, STRONG, real=market))
+    assert pick["confidence"] < fm.MIN_CONFIDENCE and pick["value"] >= fm.VALUE_THRESHOLD
+
+
+def test_side_pick_needs_the_three_market_prices():
+    assert _side(_analyze(WEAK, STRONG, real={"away_odds": 2.0, "home_odds": 4.0})) == []
+    assert _side(_analyze(WEAK, STRONG)) == []
+
+
+@pytest.mark.parametrize("played", [(3, 10), (10, 3)])
+def test_side_pick_needs_enough_games_from_both_teams(played):
+    # 3 partidos de fase de liga: un 100 % de victorias no dice casi nada
+    market = {"home_odds": 4.0, "draw_odds": 3.6, "away_odds": 2.0}
+    hs, as_ = {**WEAK, "played": played[0]}, {**STRONG, "played": played[1]}
+    assert _side(_analyze(hs, as_, real=market)) == []
+
+
+def test_side_pick_with_too_much_value_is_dropped():
+    # Un edge enorme contra el mercado suele ser información que el modelo no tiene
+    market = {"home_odds": 8.0, "draw_odds": 5.0, "away_odds": 2.6}
+    assert _side(_analyze(WEAK, STRONG, real=market)) == []
+
+
+def test_draw_is_anchored_to_the_market_too():
     even = dict(win=30, form_pts=7, draw=60)
-    picks = _analyze(_stats(**even), _stats(**even), league="LaLiga", real={"draw_odds": 3.2})
-    draw = next(p for p in picks if p["type"] == "Empate (X)")
-    assert (draw["our_prob"], draw["est_odds"], draw["data_quality"]) == (0.62, 3.2, "medium")
+    market = {"home_odds": 2.6, "draw_odds": 3.0, "away_odds": 2.9}
+    (draw,) = _side(_analyze(_stats(**even), _stats(**even), league="LaLiga", real=market))
+    no_vig = (1 / 3.0) / (1 / 2.6 + 1 / 3.0 + 1 / 2.9)
+    assert draw["type"] == "Empate (X)"
+    assert draw["our_prob"] == round(0.15 * 0.62 + 0.85 * no_vig, 3) and draw["est_odds"] == 3.0
     usual = dict(win=30, form_pts=7, draw=30)
-    assert "Empate (X)" not in _types(_analyze(_stats(**usual), _stats(**usual), league="LaLiga"))
+    assert _side(_analyze(_stats(**usual), _stats(**usual), league="LaLiga", real=market)) == []
+
+
+def test_only_one_result_bet_per_match():
+    a = {"type": "Victoria Home FC", "value": 0.05}
+    b = {"type": "Empate (X)", "value": 0.07}
+    assert fm._best_result([a, b]) == [b] and fm._best_result([]) == []
 
 
 # ── Mercados que hoy nunca salen ──────────────────────────────────
@@ -106,11 +145,12 @@ def test_over_15_never_survives_the_confidence_floor(league):
 
 def test_at_most_three_picks_sorted_by_confidence():
     hs, as_ = _stats(gf=1.8, ga=1.7, win=80, form_pts=15), _stats(gf=1.6, ga=1.8, win=10, form_pts=0)
-    picks = _analyze(hs, as_, real={"home_odds": 1.5})
+    picks = _analyze(hs, as_, real={"home_odds": 2.1, "draw_odds": 3.5, "away_odds": 3.6})
     assert set(_types(picks)) == {"Over 2.5 Goles", "Ambos Marcan (BTTS)", "Victoria Home FC"}
     confidences = [p["confidence"] for p in picks]
     assert len(picks) == fm.MAX_PICKS_MATCH and confidences == sorted(confidences, reverse=True)
-    assert all(p["confidence"] >= fm.MIN_CONFIDENCE and p["est_odds"] > fm.FOOTBALL_MIN_ODDS for p in picks)
+    assert all(p["est_odds"] > fm.FOOTBALL_MIN_ODDS for p in picks)
+    assert all(p["confidence"] >= fm.MIN_CONFIDENCE or p["value"] >= fm.VALUE_THRESHOLD for p in picks)
 
 
 def test_model_does_not_mutate_inputs():

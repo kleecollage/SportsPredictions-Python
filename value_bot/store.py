@@ -21,6 +21,9 @@ class DataStore:
         # The Odds API cache
         self.odds_cache: dict = {}
 
+        # api-football: el plan no da acceso (p. ej. Free sin la temporada actual) → no insistir
+        self.afl_blocked: bool = False
+
         # Juegos analizados por deporte en la corrida (para el mensaje sin picks)
         self.games_analyzed: dict = {}
 
@@ -36,6 +39,7 @@ class DataStore:
         self.nfl_team_ids = []
         self.pw_football_fixtures = []
         self.games_analyzed = {}
+        self.afl_blocked = False
         # odds_cache se puede reutilizar dentro del mismo run pero no entre días
         self.odds_cache.clear()
 

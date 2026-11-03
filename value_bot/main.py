@@ -5,7 +5,7 @@ import logging
 import sys
 from datetime import datetime
 
-from value_bot.config import MODEL_SINCE, SPORTS_ENABLED
+from value_bot.config import FLASHSCORE_ENABLED, MODEL_SINCE, SPORTS_ENABLED
 from value_bot.scrapers.playwright_scraper import PLAYWRIGHT_OK
 from value_bot.scrapers.flashscore import run_playwright_scrapers
 from value_bot.analysis.football_picks import get_football_picks
@@ -69,6 +69,12 @@ def _current_performance() -> dict:
     return get_roi_summary(days=7, **_current_scope())
 
 
+async def _football_scrapers():
+    """Capa 4 fútbol: Playwright Flashscore antes de los picks, solo con FLASHSCORE_ENABLED."""
+    if SPORTS_ENABLED.get("football") and FLASHSCORE_ENABLED:
+        await run_playwright_scrapers()
+
+
 def _resolve_results():
     """Resuelve picks y luego parlays pendientes; un fallo aquí no debe frenar el envío."""
     try:
@@ -105,9 +111,7 @@ async def main() -> None:
     init_db()
     _resolve_results()
 
-    # Capa 4 fútbol: Playwright antes de generar picks (NBA ya no usa Playwright)
-    if SPORTS_ENABLED.get("football"):
-        await run_playwright_scrapers()
+    await _football_scrapers()
 
     picks = await _collect_picks()
     football_picks, nba_picks, nfl_picks = picks["football"], picks["nba"], picks["nfl"]

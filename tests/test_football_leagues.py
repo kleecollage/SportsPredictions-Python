@@ -1,10 +1,12 @@
 """Ligas de fútbol: Premier, LaLiga, Champions y Europa League, con y sin football-data.org."""
+import logging
 from datetime import datetime
 
 import pytest
 
 from value_bot import config
 from value_bot.sports import football
+from value_bot.store import store
 
 REQUIRED = {
     # liga: (código football-data o None, id api-football, clave The Odds API)
@@ -133,10 +135,82 @@ def test_other_leagues_keep_the_default_cap(monkeypatch):
 
 # ── Plan de api-football sin acceso a la temporada ───────────────
 
-def test_api_football_plan_error_is_warned_once_per_league(monkeypatch, caplog):
-    plan_error = {"errors": {"plan": "Free plans do not have access to this season"}, "response": []}
+PLAN_ERROR = {"errors": {"plan": "Free plans do not have access to this season"}, "response": []}
+
+
+@pytest.fixture(autouse=True)
+def _fresh_run():
+    store.clear_run_caches()
+    yield
+    store.clear_run_caches()
+
+
+def test_api_football_plan_error_is_warned_once_and_stops_api_football(monkeypatch, caplog):
+    calls = []
     monkeypatch.setattr(football, "FOOTBALL_DATA_TOKEN", "")
-    monkeypatch.setattr(football, "api_sports_get", lambda *a, **k: plan_error)
+    monkeypatch.setattr(football, "api_sports_get", lambda *a, **k: calls.append(a) or PLAN_ERROR)
+    fixtures = football.collect_football_fixtures()
+    stats = football.build_football_stats([{"home": "A", "away": "B", "league": "LaLiga",
+                                           "home_id_afl": 1, "away_id_afl": 2, "afl_lid": 140, "afl_season": 2026}])
+    plan_warnings = [r for r in caplog.records if r.levelname == "WARNING" and "plan" in r.getMessage()]
+    assert (fixtures, stats, len(calls), len(plan_warnings)) == ([], {}, 1, 1)
+    assert store.afl_blocked
+
+
+def test_clear_run_caches_unblocks_api_football():
+    store.afl_blocked = True
+    store.clear_run_caches()
+    assert store.afl_blocked is False
+
+
+# ── football-data: respuesta vacía ≠ sin respuesta ───────────────
+
+def test_empty_football_data_round_does_not_ask_api_football(monkeypatch):
+    asked = []
+    monkeypatch.setattr(football, "FOOTBALL_DATA_TOKEN", "token-de-prueba")
+    monkeypatch.setattr(football, "fd_get", lambda path, params=None: {"matches": []})
+    monkeypatch.setattr(football, "api_sports_get", lambda b, e, params: asked.append(params["league"]) or {"response": []})
     football.collect_football_fixtures()
-    europa = [r for r in caplog.records if "Europa League" in r.getMessage() and "plan" in r.getMessage()]
-    assert len(europa) == 1 and europa[0].levelname == "WARNING"
+    with_fd = {info["afl"] for info in config.TOP_LEAGUES_FOOTBALL.values() if info.get("fd")}
+    assert not with_fd & set(asked)
+
+
+def test_football_data_without_answer_falls_back_to_api_football(monkeypatch):
+    monkeypatch.setattr(football, "FOOTBALL_DATA_TOKEN", "token-de-prueba")
+    monkeypatch.setattr(football, "fd_get", lambda path, params=None: {})
+    monkeypatch.setattr(football, "api_sports_get", lambda b, e, params: {"response": [_afl_match(params["league"])]})
+    leagues = {f["league"] for f in football.collect_football_fixtures()}
+    assert "Premier League" in leagues
+
+
+def test_football_data_fixture_date_is_the_eastern_day(monkeypatch):
+    late = {**_fd_match("PL"), "utcDate": "2026-11-06T03:00:00Z"}   # 22:00 ET del día 5
+    monkeypatch.setattr(football, "FOOTBALL_DATA_TOKEN", "token-de-prueba")
+    monkeypatch.setattr(football, "fd_get", lambda path, params=None: {"matches": [late]})
+    monkeypatch.setattr(football, "api_sports_get", lambda *a, **k: {"response": []})
+    (fix, *_) = [f for f in football.collect_football_fixtures() if f["league"] == "Premier League"]
+    assert (fix["date"], fix["kickoff"]) == ("2026-11-05", "2026-11-06T03:00:00Z")
+
+
+# ── Límite diario, fallback inútil y fechas sin zona ──────────────
+
+@pytest.mark.parametrize("errors", [{"requests": "You have reached the request limit for the day"},
+                                    {"rateLimit": "Too many requests"}])
+def test_request_limit_also_stops_api_football(monkeypatch, errors):
+    calls = []
+    monkeypatch.setattr(football, "FOOTBALL_DATA_TOKEN", "")
+    monkeypatch.setattr(football, "api_sports_get", lambda *a, **k: calls.append(a) or {"errors": errors})
+    football.collect_football_fixtures()
+    assert len(calls) == 1 and store.afl_blocked
+
+
+def test_no_fallback_attempt_when_api_football_is_blocked(monkeypatch, caplog):
+    monkeypatch.setattr(football, "FOOTBALL_DATA_TOKEN", "")
+    monkeypatch.setattr(football, "api_sports_get", lambda *a, **k: PLAN_ERROR)
+    with caplog.at_level(logging.INFO, logger=football.log.name):
+        football.collect_football_fixtures()
+    assert "Activando fallback" not in caplog.text and "Football fixtures: 0" in caplog.text
+
+
+def test_naive_utc_time_is_read_as_utc():
+    assert football._et_date("2026-11-06T03:00:00") == "2026-11-05"

@@ -1,7 +1,8 @@
 """Football fixture collection, stats building, and odds fetching."""
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from value_bot.config import (
     FOOTBALL_DATA_TOKEN, AFL_BASE, DAYS_AHEAD, MIN_FIXTURES_TOP,
@@ -14,6 +15,9 @@ from value_bot.store import store
 log = logging.getLogger(__name__)
 
 MAX_FIXTURES_LEAGUE = 4   # partidos por liga si no fija max_fixtures (cuida la cuota de api-football)
+ET = ZoneInfo("America/New_York")   # "date" del fixture = día ET (como NBA/NFL y el dedup)
+# errors de api-football que valen para toda la corrida: plan sin acceso o límite de requests
+AFL_BLOCKING_ERRORS = ("plan", "requests", "rateLimit")
 
 # ── Normalización de nombres Flashscore ───────────────────────────
 # Flashscore añade sufijos de país "(Bra)", "(Arg)", etc. y a veces
@@ -152,25 +156,61 @@ def _parse_afl_fix(m, league, info, date):
     }
 
 
+def _afl_get(endpoint: str, params: dict) -> dict:
+    """
+    api-football con corte por corrida: si el plan no da acceso (p. ej. Free sin la temporada
+    actual) o se acabó el límite de requests, se avisa una vez y no se vuelve a llamar.
+    {} si no hay datos.
+    """
+    if store.afl_blocked:
+        return {}
+    raw = api_sports_get(AFL_BASE, endpoint, params)
+    errors = raw.get("errors") if isinstance(raw, dict) else None
+    if not errors:
+        return raw if isinstance(raw, dict) else {}
+    blocking = [k for k in AFL_BLOCKING_ERRORS if isinstance(errors, dict) and k in errors]
+    if blocking:
+        store.afl_blocked = True
+        log.warning("api-football: sin acceso (%s) → no se usa en esta corrida", errors[blocking[0]])
+    else:
+        log.warning("api-football %s %s: %s", endpoint, params, errors)
+    return {}
+
+
+def _et_date(utc_iso: str) -> str:
+    """Día ET (AAAA-MM-DD) de una hora UTC ISO (sin zona = UTC); los 10 primeros caracteres si no se lee."""
+    try:
+        moment = datetime.fromisoformat(utc_iso.replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        return (utc_iso or "")[:10]
+    return (moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)).astimezone(ET).strftime("%Y-%m-%d")
+
+
 def _fd_enabled() -> bool:
     return bool(FOOTBALL_DATA_TOKEN) and FOOTBALL_DATA_TOKEN != "YOUR_FOOTBALL_DATA_TOKEN"
 
 
-def _fd_fixtures(name: str, info: dict, date_from: str, date_to: str) -> list[dict]:
-    """Partidos programados de football-data.org; [] sin token o si la liga no tiene código."""
+def _fd_fixtures(name: str, info: dict, date_from: str, date_to: str) -> list[dict] | None:
+    """
+    Partidos programados de football-data.org. [] = respondió sin partidos en la ventana
+    (no hace falta otra fuente); None = sin token, sin código de liga o sin respuesta.
+    """
     if not (info.get("fd") and _fd_enabled()):
-        return []
+        return None
     data = fd_get(f"/competitions/{info['fd']}/matches",
                   {"dateFrom": date_from, "dateTo": date_to, "status": "SCHEDULED"})
+    matches = data.get("matches") if isinstance(data, dict) else None
+    if not isinstance(matches, list):
+        return None
     fixtures = []
-    for m in data.get("matches", [])[:info.get("max_fixtures", MAX_FIXTURES_LEAGUE)]:
+    for m in matches[:info.get("max_fixtures", MAX_FIXTURES_LEAGUE)]:
         h = m.get("homeTeam", {}); a = m.get("awayTeam", {})
         if h.get("id") and a.get("id"):
             fixtures.append({
                 "sport": "football", "league": name, "flag": info["flag"],
                 "fd_code": info["fd"], "afl_lid": info["afl"],
                 "afl_season": afl_season(info), "odds_key": info.get("odds"),
-                "date": (m.get("utcDate") or "")[:10],
+                "date": _et_date(m.get("utcDate") or ""),
                 "kickoff": m.get("utcDate", ""),
                 "home": h.get("name", "?"), "home_id_fd": h.get("id"),
                 "away": a.get("name", "?"), "away_id_fd": a.get("id"),
@@ -183,12 +223,9 @@ def _afl_fixtures(name: str, info: dict, today: datetime) -> list[dict]:
     """Partidos de api-football del primer día (hoy … +DAYS_AHEAD) que tenga alguno."""
     for d in range(DAYS_AHEAD + 1):
         ds = (today + timedelta(days=d)).strftime("%Y-%m-%d")
-        raw = api_sports_get(AFL_BASE, "fixtures",
-                             {"league": info["afl"], "season": afl_season(info), "date": ds})
-        if raw.get("errors"):
-            # p. ej. el plan Free sin la temporada actual: los demás días darían lo mismo
-            log.warning("api-football %s: %s → sin partidos de esta liga", name, raw["errors"])
+        if store.afl_blocked:
             return []
+        raw = _afl_get("fixtures", {"league": info["afl"], "season": afl_season(info), "date": ds})
         cap = info.get("max_fixtures", MAX_FIXTURES_LEAGUE)
         fixtures = [p for p in (_parse_afl_fix(m, name, info, ds) for m in raw.get("response", [])[:cap]) if p]
         if fixtures:
@@ -204,9 +241,10 @@ def collect_football_fixtures():
     fixtures  = []
 
     for name, info in TOP_LEAGUES_FOOTBALL.items():
-        fixtures += _fd_fixtures(name, info, date_from, date_to) or _afl_fixtures(name, info, today)
+        fd = _fd_fixtures(name, info, date_from, date_to)
+        fixtures += fd if fd is not None else _afl_fixtures(name, info, today)
 
-    if len(fixtures) < MIN_FIXTURES_TOP:
+    if len(fixtures) < MIN_FIXTURES_TOP and not store.afl_blocked:   # el respaldo es solo api-football
         log.info("Pocas ligas top (%d). Activando fallback...", len(fixtures))
         for name, info in FALLBACK_LEAGUES_FOOTBALL.items():
             fixtures += _afl_fixtures(name, info, today)
@@ -264,11 +302,7 @@ def _resolve_team_id_by_name(team_name: str, league_id: int, season: int) -> int
     search_terms = [normalized] + significant_words[:2]
 
     for search_term in search_terms:
-        resp = api_sports_get(AFL_BASE, "teams", {
-            "search": search_term,
-            "league": league_id,
-            "season": season,
-        })
+        resp = _afl_get("teams", {"search": search_term, "league": league_id, "season": season})
         teams = resp.get("response", [])
         if not teams:
             continue
@@ -307,8 +341,7 @@ def _resolve_team_id_by_name(team_name: str, league_id: int, season: int) -> int
 
 def _fetch_team_stats(tid: int, lid: int, season: int) -> dict:
     """Llama a api-football /teams/statistics y parsea la respuesta."""
-    resp = api_sports_get(AFL_BASE, "teams/statistics",
-                          {"team": tid, "league": lid, "season": season}).get("response", {})
+    resp = _afl_get("teams/statistics", {"team": tid, "league": lid, "season": season}).get("response", {})
     if not resp:
         return {}
     pi     = resp.get("fixtures", {}).get("played", {})

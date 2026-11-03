@@ -1,4 +1,4 @@
-"""Primitivas de mercado compartidas por los modelos NFL y NBA (puro: sin red ni BD)."""
+"""Primitivas de mercado compartidas por los modelos NFL, NBA y fútbol (puro: sin red ni BD)."""
 import math
 
 SIDE_MARKETS = ("moneyline", "spread")  # apuestas a un equipo, correlacionadas entre sí
@@ -24,11 +24,16 @@ def american_to_decimal(raw) -> float | None:
     return None
 
 
+def no_vig(*odds: float) -> tuple[float, ...]:
+    """Probabilidades implícitas de todos los resultados (2 o 3) quitando el margen de la casa."""
+    implied = [1 / o for o in odds]
+    total = sum(implied)
+    return tuple(p / total for p in implied)
+
+
 def no_vig_pair(odds_a: float, odds_b: float) -> tuple[float, float]:
     """Probabilidades implícitas de dos lados quitando el margen de la casa."""
-    imp_a, imp_b = 1 / odds_a, 1 / odds_b
-    total = imp_a + imp_b
-    return imp_a / total, imp_b / total
+    return no_vig(odds_a, odds_b)
 
 
 def expected_value(prob: float, odds: float, push: float) -> float:

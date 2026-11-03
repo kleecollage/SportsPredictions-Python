@@ -99,3 +99,36 @@ def test_db_dedup_runs_before_the_per_sport_cap(temp_db, monkeypatch):
     picks = picks_mod.get_football_picks()
     assert len(picks) == cap
     assert "Home 0" not in [p["home"] for p in picks]
+
+
+# ── Picks anclados al mercado y un partido por corrida ────────────
+
+def _patch_picks(monkeypatch, fixtures, picks_by_home, factors=None):
+    monkeypatch.setattr(picks_mod, "collect_football_fixtures", lambda: fixtures)
+    monkeypatch.setattr(picks_mod, "build_football_stats", lambda f: {})
+    monkeypatch.setattr(picks_mod, "get_calibration_factors", lambda *a, **k: factors or {})
+    monkeypatch.setattr(picks_mod, "analyze_football_match", lambda fix, h, a: picks_by_home[fix["home"]])
+
+
+VALUE_BET = {"type": "Victoria Away 0", "confidence": 52, "our_prob": 0.524, "est_odds": 2.0,
+             "value": 0.048, "data_quality": "high", "real_odds_source": True}
+
+
+def test_value_bet_below_confidence_floor_survives(temp_db, monkeypatch):
+    _patch_picks(monkeypatch, [_fix(0)], {"Home 0": [VALUE_BET]})
+    assert [p["type"] for p in picks_mod.get_football_picks()] == ["Victoria Away 0"]
+
+
+def test_market_anchored_pick_is_not_recalibrated(temp_db, monkeypatch):
+    _patch_picks(monkeypatch, [_fix(0)], {"Home 0": [VALUE_BET]}, factors={50: 0.5})
+    (pick,) = picks_mod.get_football_picks()
+    assert (pick["our_prob"], pick["value"]) == (0.524, 0.048)
+
+
+def test_match_with_a_pick_from_an_earlier_run_gets_no_new_pick_type(temp_db, monkeypatch):
+    fixtures = [_fix(0)]
+    btts = {"type": "Ambos Marcan (BTTS)", "confidence": 70, "our_prob": 0.7, "est_odds": 1.4,
+            "value": None, "data_quality": "high"}
+    _patch_picks(monkeypatch, fixtures, {"Home 0": [btts]})
+    db.save_picks("2026-10-30", [{**fixtures[0], "type": "Over 2.5 Goles", "confidence": 70}])
+    assert picks_mod.get_football_picks() == []

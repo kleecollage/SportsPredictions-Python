@@ -3,7 +3,7 @@ import logging
 from collections import defaultdict
 
 from value_bot.analysis.football_model import analyze_football_match as analyze_football_market
-from value_bot.analysis.football_model import apply_calibration
+from value_bot.analysis.football_model import apply_calibration, is_pickable
 from value_bot.config import MAX_PICKS_SPORT, MIN_CONFIDENCE, MODEL_SINCE, VALUE_THRESHOLD
 from value_bot.db import already_sent_for_game, get_calibration_factors
 from value_bot.sports.football import build_football_stats, collect_football_fixtures, get_real_odds
@@ -21,12 +21,20 @@ def analyze_football_match(fix: dict, hs: dict | None, as_: dict | None) -> list
         log.info("Fútbol %s vs %s: sin stats de ambos equipos → sin picks", fix["home"], fix["away"])
         return []
     real = get_real_odds(fix.get("odds_key", ""), fix["home"], fix["away"])
-    return analyze_football_market(fix, hs, as_, real, min_conf=MIN_CONFIDENCE)
+    return analyze_football_market(fix, hs, as_, real, min_conf=MIN_CONFIDENCE, value_threshold=VALUE_THRESHOLD)
 
 
 def _already_sent(pick: dict) -> bool:
-    """Mismo pick para el mismo partido (fecha del juego) en cualquier corrida previa."""
-    return already_sent_for_game("football", pick["home"], pick["away"], pick.get("date", ""), pick["type"])
+    """
+    El partido (fecha del juego) ya recibió algún pick en una corrida previa: si los números
+    cambian de un día a otro no se le suma otro mercado al mismo partido.
+    """
+    return already_sent_for_game("football", pick["home"], pick["away"], pick.get("date", ""))
+
+
+def _calibrated(pick: dict, factors: dict) -> dict:
+    """Los picks con cuota real ya están anclados al mercado (como NBA/NFL): no se recalibran."""
+    return pick if pick.get("real_odds_source") else apply_calibration(pick, factors)
 
 
 def _cap_per_league_type(picks: list[dict]) -> list[dict]:
@@ -49,8 +57,8 @@ def get_football_picks() -> list[dict]:
     all_picks = []
     for fix in fixtures:
         for pick in analyze_football_match(fix, stats.get(fix["home"]), stats.get(fix["away"])):
-            pick = apply_calibration(pick, cal_factors)
-            if pick["confidence"] >= MIN_CONFIDENCE:
+            pick = _calibrated(pick, cal_factors)
+            if is_pickable(pick, MIN_CONFIDENCE, VALUE_THRESHOLD):
                 all_picks.append({**fix, **pick})
 
     # Dedup contra BD antes del tope: un pick ya enviado no debe quitarle el lugar a otro
