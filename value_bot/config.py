@@ -259,18 +259,12 @@ def api_sports_get(base, endpoint, params):
     return http_get(f"{base}/{endpoint}", headers=SPORTS_HEADS, params=params)
 
 
+def fd_enabled() -> bool:
+    return bool(FOOTBALL_DATA_TOKEN) and FOOTBALL_DATA_TOKEN != "YOUR_FOOTBALL_DATA_TOKEN"
+
+
 def fd_get(path, params=None):
     result = http_get(f"{FD_BASE}{path}", headers=FD_HEADS, params=params)
     if result:  # solo esperar si hubo respuesta real (respetar rate limit)
         time.sleep(7)
     return result
-
-
-# ── Odds math helpers ─────────────────────────────────────────────
-
-def est_odds(prob):
-    return round((1 / max(prob, 0.01)) * 0.95, 2)
-
-
-def edge(prob, real_odds):
-    return round(prob * real_odds - 1, 4)

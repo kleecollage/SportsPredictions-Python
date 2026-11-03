@@ -39,7 +39,7 @@ def no_vig_pair(odds_a: float, odds_b: float) -> tuple[float, float]:
 def expected_value(prob: float, odds: float, push: float) -> float:
     """
     EV por unidad. prob = P(ganar | no push); con push se devuelve la apuesta.
-    Sin push equivale a config.edge().
+    Sin push es prob × cuota − 1.
     """
     return round(prob * (1 - push) * odds + push - 1, 4)
 

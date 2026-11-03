@@ -1,10 +1,7 @@
-"""Modelo de fútbol (puro): mercados por estilo de liga, cuotas reales y topes por partido."""
-import itertools
-
+"""Modelo de fútbol (puro): totales y 1X2 anclados al mercado, un pick por mercado y partido."""
 import pytest
 
 from value_bot.analysis import football_model as fm
-from value_bot.config import est_odds
 
 FIX = {"home": "Home FC", "away": "Away FC", "league": "Bundesliga"}
 
@@ -22,33 +19,67 @@ def _analyze(hs, as_, league="Bundesliga", real=None):
     return fm.analyze_football_match({**FIX, "league": league}, hs, as_, real)
 
 
-# ── Goles ─────────────────────────────────────────────────────────
+# ── Totales: línea real y mercado sin vig ────────────────────────
 
-# Con cuota estimada 0.95/p, Over/Under/BTTS solo pasan conf ≥ 62 y cuota > 1.30 entre ~64 % y ~73 %
-HIGH_XG = (_stats(gf=1.8, ga=1.7), _stats(gf=1.6, ga=1.8))     # XG 1.80 + 1.65
-
-
-def test_attacking_league_with_high_xg_picks_over_not_under():
-    picks = _analyze(*HIGH_XG)
-    assert "Over 2.5 Goles" in _types(picks) and "Under 2.5 Goles" not in _types(picks)
+HIGH_XG = (_stats(gf=2.2, ga=1.8), _stats(gf=2.0, ga=2.0))     # XG 2.10 + 1.90 = 4.0
+LOW_XG = (_stats(gf=0.9, ga=0.9), _stats(gf=0.9, ga=0.9))      # XG 1.8
 
 
-def test_defensive_league_with_low_xg_picks_under():
-    picks = _analyze(_stats(gf=1.0, ga=1.0), _stats(gf=1.0, ga=1.0), league="Serie A")   # XG 2.0
-    under = next(p for p in picks if p["type"] == "Under 2.5 Goles")
-    assert "Over 2.5 Goles" not in _types(picks)
-    assert under["value"] is None and under["est_odds"] == est_odds(1 - fm.poisson_over(2.0, 2))
+def _totals(line, over, under):
+    return {"total_line": line, "over_odds": over, "under_odds": under}
 
 
-def test_very_likely_goal_markets_are_dropped_by_their_estimated_odds():
-    # P(Over 2.5) ≈ 0.80 → cuota estimada 1.19 < 1.30
-    assert "Over 2.5 Goles" not in _types(_analyze(_stats(gf=2.5, ga=1.5), _stats(gf=2.0, ga=1.8)))
+def _total(hs, as_, real):
+    return fm._total_picks(fm.build_match(FIX, hs, as_, real))
 
 
-def test_btts_is_not_added_next_to_an_under():
-    m = fm.build_match(FIX, _stats(gf=2.5, ga=2.5), _stats(gf=2.5, ga=2.5), None)
-    under = {"type": "Under 2.5 Goles"}
-    assert fm._btts_pick(m, []) and fm._btts_pick(m, [under]) == []
+def test_total_outcomes_split_push_only_on_integer_lines():
+    over, push, under = fm.total_outcomes(2.0, 2.5)
+    assert push == 0 and over + under == pytest.approx(1)
+    over, push, under = fm.total_outcomes(2.0, 3.0)
+    assert push == pytest.approx(fm.poisson_p(2.0, 3)) and over + push + under == pytest.approx(1)
+
+
+def test_over_blends_model_with_no_vig_market_at_the_real_line():
+    (pick,) = _total(*HIGH_XG, _totals(3.5, 3.0, 1.40))
+    model = fm.total_outcomes(4.0, 3.5)[0]
+    market = (1 / 3.0) / (1 / 3.0 + 1 / 1.40)
+    blended = round(0.15 * model + 0.85 * market, 3)
+    assert pick["type"] == "Over 3.5 Goles" and (pick["est_odds"], pick["real_odds_source"]) == (3.0, True)
+    assert (pick["our_prob"], pick["confidence"]) == (blended, int(blended * 100))
+    assert pick["value"] == pytest.approx(blended * 3.0 - 1, abs=1e-4)
+    assert pick["reasoning"].startswith("Modelo 56% · mercado 31% → ")
+
+
+def test_side_with_more_ev_wins_even_if_less_likely():
+    (pick,) = _total(*LOW_XG, _totals(2.5, 1.75, 2.1))
+    assert pick["type"] == "Under 2.5 Goles" and pick["confidence"] < 50 and pick["value"] > 0
+
+
+def test_integer_line_prices_the_push():
+    (pick,) = _total(_stats(gf=1.5, ga=1.5), _stats(gf=1.5, ga=1.5), _totals(3.0, 1.6, 2.45))
+    push = fm.poisson_p(3.0, 3)
+    assert pick["type"] == "Under 3.0 Goles" and pick["push_prob"] == pytest.approx(push, abs=1e-4)
+    assert pick["value"] == pytest.approx(pick["our_prob"] * (1 - push) * 2.45 + push - 1, abs=1e-3)
+
+
+@pytest.mark.parametrize("real", [None, {"home_odds": 2.0}, _totals(2.5, None, 1.9), _totals(None, 1.9, 1.9)])
+def test_without_real_totals_there_is_no_total_pick(real):
+    assert _total(*LOW_XG, real) == []
+
+
+def test_total_needs_enough_games_from_both_teams():
+    hs, as_ = LOW_XG
+    assert _total({**hs, "played": 3}, as_, _totals(2.5, 1.75, 2.1)) == []
+
+
+def test_total_with_odds_above_the_maximum_is_dropped():
+    assert _total(*HIGH_XG, _totals(3.5, 3.8, 1.25)) == []
+
+
+def test_total_with_too_much_value_is_dropped():
+    # Modelo 73 % Under 2.5 contra un mercado de 34 %: EV > FOOTBALL_MAX_PICK_VALUE
+    assert _total(*LOW_XG, _totals(2.5, 1.45, 2.9)) == []
 
 
 # ── 1X2 y empate: anclados al mercado sin vig ─────────────────────
@@ -118,38 +149,25 @@ def test_draw_is_anchored_to_the_market_too():
 def test_only_one_result_bet_per_match():
     a = {"type": "Victoria Home FC", "value": 0.05}
     b = {"type": "Empate (X)", "value": 0.07}
-    assert fm._best_result([a, b]) == [b] and fm._best_result([]) == []
+    assert fm._best([a, None, b]) == [b] and fm._best([None]) == []
 
 
-# ── Mercados que hoy nunca salen ──────────────────────────────────
+# ── Partido ───────────────────────────────────────────────────────
 
-MODERATE_GAP = (_stats(win=40, form_pts=7), _stats(win=40, form_pts=2))   # diff de fuerza 22.5
-
-
-def test_double_chance_estimated_odds_are_below_the_minimum():
-    (dc,) = fm._double_chance_pick(fm.build_match(FIX, *MODERATE_GAP, None))
-    assert dc["type"] == "Doble Chance Home FC (1X)" and dc["est_odds"] < fm.FOOTBALL_MIN_ODDS
-    assert not any(t.startswith("Doble Chance") for t in _types(_analyze(*MODERATE_GAP)))
+def test_totals_are_off_by_default():
+    real = _totals(2.5, 1.75, 2.1)
+    assert fm.FOOTBALL_TOTALS_ENABLED is False
+    assert _analyze(*LOW_XG, real=real) == [] and _total(*LOW_XG, real) != []
 
 
-@pytest.mark.parametrize("league", ["Bundesliga", "Serie A", "LaLiga", "Otra liga"])
-def test_over_15_never_survives_the_confidence_floor(league):
-    # Para llegar al 62 % necesita XG ≥ 3.0, y ahí siempre sale antes un Over 2.5
-    goals = (0.5, 1.0, 1.5, 2.0, 2.5, 3.0)
-    for gf_h, ga_h, gf_a, ga_a in itertools.product(goals, repeat=4):
-        picks = _analyze(_stats(gf=gf_h, ga=ga_h), _stats(gf=gf_a, ga=ga_a), league=league)
-        assert "Over 1.5 Goles" not in _types(picks)
-
-
-# ── Topes y orden ─────────────────────────────────────────────────
-
-def test_at_most_three_picks_sorted_by_confidence():
-    hs, as_ = _stats(gf=1.8, ga=1.7, win=80, form_pts=15), _stats(gf=1.6, ga=1.8, win=10, form_pts=0)
-    picks = _analyze(hs, as_, real={"home_odds": 2.1, "draw_odds": 3.5, "away_odds": 3.6})
-    assert set(_types(picks)) == {"Over 2.5 Goles", "Ambos Marcan (BTTS)", "Victoria Home FC"}
-    confidences = [p["confidence"] for p in picks]
-    assert len(picks) == fm.MAX_PICKS_MATCH and confidences == sorted(confidences, reverse=True)
-    assert all(p["est_odds"] > fm.FOOTBALL_MIN_ODDS for p in picks)
+def test_match_gives_at_most_one_total_and_one_result_sorted_by_value(monkeypatch):
+    monkeypatch.setattr(fm, "FOOTBALL_TOTALS_ENABLED", True)
+    real = {**_totals(2.5, 1.75, 2.1), "home_odds": 4.0, "draw_odds": 3.6, "away_odds": 2.0}
+    low = {"goals_for_pg": 0.9, "goals_against_pg": 0.9}
+    picks = _analyze({**WEAK, **low}, {**STRONG, **low}, real=real)
+    assert sorted(_types(picks)) == ["Under 2.5 Goles", "Victoria Away FC"]
+    values = [p["value"] for p in picks]
+    assert values == sorted(values, reverse=True)
     assert all(p["confidence"] >= fm.MIN_CONFIDENCE or p["value"] >= fm.VALUE_THRESHOLD for p in picks)
 
 

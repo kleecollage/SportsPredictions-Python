@@ -20,6 +20,8 @@ class DataStore:
 
         # The Odds API cache
         self.odds_cache: dict = {}
+        self.odds_credits_left: int | None = None   # x-requests-remaining de la última respuesta
+        self.odds_unmatched: set = set()   # (liga, local, visitante) sin evento ya avisados
 
         # api-football: el plan no da acceso (p. ej. Free sin la temporada actual) → no insistir
         self.afl_blocked: bool = False
@@ -42,6 +44,8 @@ class DataStore:
         self.afl_blocked = False
         # odds_cache se puede reutilizar dentro del mismo run pero no entre días
         self.odds_cache.clear()
+        self.odds_credits_left = None
+        self.odds_unmatched = set()
 
 
 store = DataStore()

@@ -1,12 +1,16 @@
-"""Picks de fútbol: junta fixtures + stats + cuotas 1X2 con el modelo y filtra contra la BD."""
+"""
+Picks de fútbol: junta fixtures + stats + cuotas reales (1X2 y totales) con el modelo y filtra
+contra la BD. Sin calibración por historial: los picks ya están anclados al mercado (como NBA/NFL).
+"""
 import logging
 from collections import defaultdict
 
 from value_bot.analysis.football_model import analyze_football_match as analyze_football_market
-from value_bot.analysis.football_model import apply_calibration, is_pickable
-from value_bot.config import MAX_PICKS_SPORT, MIN_CONFIDENCE, MODEL_SINCE, VALUE_THRESHOLD
-from value_bot.db import already_sent_for_game, get_calibration_factors
-from value_bot.sports.football import build_football_stats, collect_football_fixtures, get_real_odds
+from value_bot.analysis.football_model import is_pickable
+from value_bot.config import MAX_PICKS_SPORT, MIN_CONFIDENCE, VALUE_THRESHOLD
+from value_bot.db import already_sent_for_game
+from value_bot.sports.football import build_football_stats, collect_football_fixtures, side_stats
+from value_bot.sports.football_odds import get_real_odds
 from value_bot.store import store
 
 log = logging.getLogger(__name__)
@@ -20,7 +24,7 @@ def analyze_football_match(fix: dict, hs: dict | None, as_: dict | None) -> list
         # Sin stats de los dos equipos no hay proyección: no se inventan picks con promedios de liga.
         log.info("Fútbol %s vs %s: sin stats de ambos equipos → sin picks", fix["home"], fix["away"])
         return []
-    real = get_real_odds(fix.get("odds_key", ""), fix["home"], fix["away"])
+    real = get_real_odds(fix.get("odds_key", ""), fix["home"], fix["away"], date=fix.get("date") or None)
     return analyze_football_market(fix, hs, as_, real, min_conf=MIN_CONFIDENCE, value_threshold=VALUE_THRESHOLD)
 
 
@@ -30,11 +34,6 @@ def _already_sent(pick: dict) -> bool:
     cambian de un día a otro no se le suma otro mercado al mismo partido.
     """
     return already_sent_for_game("football", pick["home"], pick["away"], pick.get("date", ""))
-
-
-def _calibrated(pick: dict, factors: dict) -> dict:
-    """Los picks con cuota real ya están anclados al mercado (como NBA/NFL): no se recalibran."""
-    return pick if pick.get("real_odds_source") else apply_calibration(pick, factors)
 
 
 def _cap_per_league_type(picks: list[dict]) -> list[dict]:
@@ -53,11 +52,9 @@ def get_football_picks() -> list[dict]:
     fixtures = collect_football_fixtures()
     store.games_analyzed["football"] = len(fixtures)
     stats = build_football_stats(fixtures)
-    cal_factors = get_calibration_factors("football", MODEL_SINCE.get("football"))
     all_picks = []
     for fix in fixtures:
-        for pick in analyze_football_match(fix, stats.get(fix["home"]), stats.get(fix["away"])):
-            pick = _calibrated(pick, cal_factors)
+        for pick in analyze_football_match(fix, side_stats(stats, fix, "home"), side_stats(stats, fix, "away")):
             if is_pickable(pick, MIN_CONFIDENCE, VALUE_THRESHOLD):
                 all_picks.append({**fix, **pick})
 
@@ -71,3 +68,4 @@ def get_football_picks() -> list[dict]:
     picks = _cap_per_league_type(fresh)[:MAX_PICKS_SPORT]
     log.info("Football picks: %d (de %d fixtures, %d candidatos)", len(picks), len(fixtures), len(all_picks))
     return picks
+

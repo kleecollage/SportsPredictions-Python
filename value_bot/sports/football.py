@@ -1,15 +1,15 @@
-"""Football fixture collection, stats building, and odds fetching."""
+"""Football fixture collection and stats building (las cuotas están en football_odds)."""
 import logging
 import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from value_bot.config import (
-    FOOTBALL_DATA_TOKEN, AFL_BASE, DAYS_AHEAD, MIN_FIXTURES_TOP,
-    THE_ODDS_API_KEY, ODDS_BASE,
+    AFL_BASE, DAYS_AHEAD, MIN_FIXTURES_TOP,
     TOP_LEAGUES_FOOTBALL, FALLBACK_LEAGUES_FOOTBALL,
-    fd_get, api_sports_get, http_get, afl_season,
+    fd_enabled, fd_get, api_sports_get, afl_season,
 )
+from value_bot.analysis.football_ratings import team_ratings
 from value_bot.store import store
 
 log = logging.getLogger(__name__)
@@ -97,42 +97,6 @@ def _name_distance(a: str, b: str) -> int:
     return -sum(1 for c in set(a) if c in b)
 
 
-# ── Odds ──────────────────────────────────────────────────────────
-
-def get_real_odds(sport_key, home, away):
-    if not THE_ODDS_API_KEY or not sport_key:
-        return None
-    if sport_key not in store.odds_cache:
-        data = http_get(
-            f"{ODDS_BASE}/sports/{sport_key}/odds/",
-            params={"apiKey": THE_ODDS_API_KEY, "regions": "eu", "markets": "h2h"},
-            skip_codes=(401, 404),
-        )
-        store.odds_cache[sport_key] = data if isinstance(data, list) else []
-    hl, al = home.lower()[:7], away.lower()[:7]
-    for g in store.odds_cache.get(sport_key, []):
-        gh = (g.get("home_team") or "").lower()
-        ga = (g.get("away_team") or "").lower()
-        if hl in gh and al in ga:
-            bookmakers = g.get("bookmakers", [])
-            if not bookmakers:
-                continue
-            outcomes = bookmakers[0].get("markets", [{}])[0].get("outcomes", [])
-            result = {}
-            for o in outcomes:
-                name  = (o.get("name") or "").lower()
-                price = float(o.get("price", 0))
-                if hl in name:
-                    result["home_odds"] = price
-                elif al in name:
-                    result["away_odds"] = price
-                elif "draw" in name:
-                    result["draw_odds"] = price
-            if len(result) >= 2:
-                return result
-    return None
-
-
 # ── Fixtures ──────────────────────────────────────────────────────
 
 def _parse_afl_fix(m, league, info, date):
@@ -186,16 +150,12 @@ def _et_date(utc_iso: str) -> str:
     return (moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)).astimezone(ET).strftime("%Y-%m-%d")
 
 
-def _fd_enabled() -> bool:
-    return bool(FOOTBALL_DATA_TOKEN) and FOOTBALL_DATA_TOKEN != "YOUR_FOOTBALL_DATA_TOKEN"
-
-
 def _fd_fixtures(name: str, info: dict, date_from: str, date_to: str) -> list[dict] | None:
     """
     Partidos programados de football-data.org. [] = respondió sin partidos en la ventana
     (no hace falta otra fuente); None = sin token, sin código de liga o sin respuesta.
     """
-    if not (info.get("fd") and _fd_enabled()):
+    if not (info.get("fd") and fd_enabled()):
         return None
     data = fd_get(f"/competitions/{info['fd']}/matches",
                   {"dateFrom": date_from, "dateTo": date_to, "status": "SCHEDULED"})
@@ -211,7 +171,7 @@ def _fd_fixtures(name: str, info: dict, date_from: str, date_to: str) -> list[di
                 "fd_code": info["fd"], "afl_lid": info["afl"],
                 "afl_season": afl_season(info), "odds_key": info.get("odds"),
                 "date": _et_date(m.get("utcDate") or ""),
-                "kickoff": m.get("utcDate", ""),
+                "kickoff": m.get("utcDate", ""), "event_id": f"fd:{m['id']}" if m.get("id") else None,
                 "home": h.get("name", "?"), "home_id_fd": h.get("id"),
                 "away": a.get("name", "?"), "away_id_fd": a.get("id"),
                 "source": "football-data",
@@ -365,68 +325,58 @@ def _fetch_team_stats(tid: int, lid: int, season: int) -> dict:
     }
 
 
-def build_football_stats(fixtures):
-    stats = {}
+StatsKey = tuple[str, str]   # (liga del fixture, equipo)
 
-    # ── Paso 1: football-data.org standings (fixtures con fd_code) ────────────
-    if _fd_enabled():
-        for code in set(f["fd_code"] for f in fixtures if f.get("fd_code")):
-            for section in fd_get(f"/competitions/{code}/standings").get("standings", []):
-                if section.get("type") != "TOTAL":
-                    continue
-                for row in section.get("table", []):
-                    name   = row.get("team", {}).get("name", "?")
-                    played = row.get("playedGames", 0)
-                    if played < 3:
-                        continue
-                    form_s = row.get("form", "") or ""
-                    rec    = form_s[-5:] if len(form_s) >= 5 else form_s
-                    fp     = sum(3 if c == "W" else (1 if c == "D" else 0) for c in rec)
-                    stats[name] = {
-                        "played": played,
-                        "goals_for_pg":     round(row.get("goalsFor",     0) / max(played, 1), 2),
-                        "goals_against_pg": round(row.get("goalsAgainst", 0) / max(played, 1), 2),
-                        "win_rate":         round(row.get("won",  0) / max(played, 1) * 100, 1),
-                        "draw_rate":        round(row.get("draw", 0) / max(played, 1) * 100, 1),
-                        "form": rec, "form_pts": fp,
-                    }
+
+def side_stats(stats: dict[StatsKey, dict], fix: dict, side: str) -> dict | None:
+    """Stats de `side` ("home"/"away") del fixture en **su** competición."""
+    return stats.get((fix.get("league", ""), fix[side]))
+
+
+def _fd_ratings(fixtures: list[dict]) -> dict[StatsKey, dict]:
+    """Paso 1: una llamada a football-data por competición con los partidos terminados."""
+    if not fd_enabled():
+        return {}
+    by_code = {}
+    for code in sorted({f["fd_code"] for f in fixtures if f.get("fd_code")}):
+        data = fd_get(f"/competitions/{code}/matches", {"status": "FINISHED"})
+        by_code[code] = team_ratings(data.get("matches") if isinstance(data, dict) else None)
+        if not by_code[code]:
+            log.warning("football-data %s: sin partidos terminados legibles", code)
+    return {(f.get("league", ""), f[side]): by_code[f["fd_code"]][f[side]]
+            for f in fixtures if f.get("fd_code") in by_code
+            for side in ("home", "away") if f[side] in by_code[f["fd_code"]]}
+
+
+def build_football_stats(fixtures):
+    """
+    {(liga, equipo): stats}. Un equipo de Premier y Champions tiene una fila por competición:
+    sus ratings y medias de liga no se mezclan (ni cuentan partidos de la otra para el mínimo).
+    """
+    stats = _fd_ratings(fixtures)
 
     # ── Paso 2: api-football con IDs conocidos (fixtures con afl_lid) ─────────
-    missing_with_ids = set()
-    for f in fixtures:
-        for side in ("home", "away"):
-            nm = f[side]
-            if nm not in stats:
-                missing_with_ids.add((
-                    nm,
-                    f.get(f"{side}_id_afl"),
-                    f.get("afl_lid"),
-                    f.get("afl_season"),
-                ))
-
-    for tname, tid, lid, season in missing_with_ids:
+    missing_with_ids = {
+        (f.get("league", ""), f[side], f.get(f"{side}_id_afl"), f.get("afl_lid"), f.get("afl_season"))
+        for f in fixtures for side in ("home", "away") if side_stats(stats, f, side) is None
+    }
+    for league, tname, tid, lid, season in missing_with_ids:
         if not (tid and lid and season):
             continue   # sin IDs → se resuelve en el Paso 3
         s = _fetch_team_stats(tid, lid, season)
         if s:
-            stats[tname] = s
+            stats[(league, tname)] = s
 
     # ── Paso 3: resolución por nombre para fixtures de Flashscore (sin IDs) ───
     # Flashscore fixtures tienen afl_lid=None pero sí tienen league name,
     # que mapeamos a (afl_id, season) via _LEAGUE_AFL_MAP para buscar en api-football
-    still_missing = [
-        (f[side], f.get("league", ""))
+    still_missing = dict.fromkeys(
+        (f.get("league", ""), f[side])
         for f in fixtures
         for side in ("home", "away")
-        if f[side] not in stats and not f.get(f"{side}_id_afl")
-    ]
-    # Deduplicar (mismo equipo puede aparecer en varios fixtures)
-    seen = set()
-    for tname, league_name in still_missing:
-        if tname in seen or tname in stats:
-            continue
-        seen.add(tname)
-
+        if side_stats(stats, f, side) is None and not f.get(f"{side}_id_afl")
+    )
+    for league_name, tname in still_missing:
         league_info = _LEAGUE_AFL_MAP.get(league_name)
         if not league_info:
             log.debug("Sin mapeo AFL para liga '%s' (equipo: %s)", league_name, tname)
@@ -439,7 +389,7 @@ def build_football_stats(fixtures):
 
         s = _fetch_team_stats(tid, lid, season)
         if s:
-            stats[tname] = s
+            stats[(league_name, tname)] = s
             log.info("Stats resueltas por nombre: %s (liga %s)", tname, league_name)
 
     log.info("Football stats: %d equipos (%d fixtures)", len(stats), len(fixtures))

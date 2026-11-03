@@ -1,51 +1,54 @@
 """
-Modelo de fútbol (Poisson) para goles, ambos marcan, 1X2, empate y doble chance.
+Modelo de fútbol (Poisson) contra el mercado: totales de goles y resultado (1X2).
 
-1. Goles esperados (XG) de cada equipo = media de sus goles a favor y los que recibe el rival.
-2. Over/Under 2.5 y ambos marcan salen de Poisson sobre esos XG; el estilo de la liga
-   (LEAGUE_AVERAGES) decide si se busca Over (ofensiva) o Under (defensiva).
-3. Fuerza = % de victorias + puntos de forma × 2.5 (+10 al local); la diferencia decide
-   qué resultado (1X2) es candidato: victoria (≥ 24), doble chance (12–23) y empate (≤ 10).
-4. 1X2 y empate se anclan al mercado como NBA/NFL: probabilidad = FOOTBALL_MODEL_WEIGHT ×
-   modelo + resto × mercado sin vig de los tres resultados (cuota real de The Odds API), con
-   EV entre 0 y FOOTBALL_MAX_PICK_VALUE, cuota 1.30–3.50, ≥ FOOTBALL_MIN_SIDE_GAMES partidos
-   por equipo y un solo resultado por partido. Sin los tres precios no hay pick de resultado.
-   El peso viene de NBA/NFL (backtest de fútbol pendiente). El resto (goles, ambos marcan)
-   lleva cuota estimada a partir de la probabilidad del modelo.
+1. Goles esperados (XG): con ratings de local/visitante de ambos (football_ratings) es
+   media de goles del local en la liga × ataque de local × defensa de visitante del rival (y al
+   revés); sin ellos, media de los goles a favor propios y los que recibe el rival.
+2. Totales: P(goles > línea) con Poisson del XG total contra la **línea real** (The Odds API,
+   cualquier línea .0/.5; push en las enteras). En cada partido se apuesta el lado de mayor EV.
+   Apagados (FOOTBALL_TOTALS_ENABLED): en el backtest 2024-25 y 2025-26 (5 ligas, cierre de
+   Pinnacle) el Brier del modelo fue peor que el del mercado y el peso óptimo, 0.00.
+3. Resultado: fuerza = % de victorias + puntos de forma × 2.5 (+10 al local); la diferencia
+   decide qué resultado es candidato: victoria (≥ 24) o empate (≤ 10, ligas no ofensivas).
+4. Todo se ancla al mercado como NBA/NFL: probabilidad = peso × modelo + resto × mercado sin
+   vig (FOOTBALL_TOTALS_WEIGHT / FOOTBALL_MODEL_WEIGHT), EV entre 0 y FOOTBALL_MAX_PICK_VALUE,
+   cuota 1.30–3.50 y ≥ FOOTBALL_MIN_SIDE_GAMES partidos por equipo. Sin cuota real no hay pick:
+   la confianza ya no sale de una cuota estimada a partir del propio modelo.
+5. Por partido: a lo sumo un total y un resultado (1, X o 2 son excluyentes).
 
-Funciones puras: no hacen requests ni leen la BD (la cuota real llega como argumento).
+Funciones puras: no hacen requests ni leen la BD (las cuotas reales llegan como argumento).
 """
 import math
 from typing import NamedTuple
 
-from value_bot.analysis.market import best_value, no_vig, sources_txt
-from value_bot.config import (
-    LEAGUE_AVERAGES, LEAGUE_AVG_DEFAULT, MIN_CONFIDENCE, VALUE_THRESHOLD, edge, est_odds,
-)
+from value_bot.analysis.market import best_value, expected_value, no_vig, push_txt, sources_txt
+from value_bot.config import LEAGUE_AVERAGES, LEAGUE_AVG_DEFAULT, MIN_CONFIDENCE, VALUE_THRESHOLD
 
 FOOTBALL_MIN_ODDS   = 1.30   # cuotas menores no dejan margen apostable
 FOOTBALL_MAX_ODDS   = 3.50   # en underdogs largos el error del modelo se multiplica por la cuota
-FOOTBALL_MODEL_WEIGHT = 0.15  # peso del modelo frente al mercado sin vig (el de NBA/NFL)
+FOOTBALL_MODEL_WEIGHT = 0.15  # peso del modelo en 1X2 frente al mercado sin vig (el de NBA/NFL)
+FOOTBALL_TOTALS_WEIGHT = 0.15  # idem en totales (tools/football_backtest dio 0.00)
+FOOTBALL_TOTALS_ENABLED = False  # el modelo de totales resta frente al mercado; se evalúa pero no se apuesta
 FOOTBALL_MAX_PICK_VALUE = 0.10  # más edge contra el mercado suele ser info que el modelo no tiene
 FOOTBALL_MIN_SIDE_GAMES = 6  # 3 partidos de fase de liga (100 % de victorias) no dicen nada
-MAX_PICKS_MATCH     = 3
+MAX_GOALS = 15               # cola de Poisson que se suma (P(> 15 goles) ≈ 0)
 HOME_STRENGTH_BONUS = 10     # ventaja de local en la escala de fuerza
 FORM_PTS_WEIGHT     = 2.5    # puntos de forma (últimos 5) → fuerza
-WIN_DIFF            = 24     # diff de fuerza mínima para 1X2
-DOUBLE_CHANCE_DIFF  = 12     # 12 ≤ diff < 24 → doble chance
+WIN_DIFF            = 24     # diff de fuerza mínima para victoria
 DRAW_MAX_DIFF       = 10     # empate solo entre equipos muy igualados
 DEFAULT_DRAW_PCT    = 25
-OVER_STYLES = ("attacking", "balanced", "technical")
 DRAW_STYLES = ("defensive", "technical", "balanced")
+RESULT_KEYS = ("home_odds", "draw_odds", "away_odds")
+VENUE_KEYS = ("home_attack", "home_defense", "away_attack", "away_defense", "league_home_gpg", "league_away_gpg")
 
 
 class Match(NamedTuple):
-    """Partido con las stats de ambos equipos y las proyecciones Poisson."""
+    """Partido con las stats de ambos equipos, sus XG y las cuotas reales."""
     fix: dict
     hs: dict
     as_: dict
     league: dict          # fila de LEAGUE_AVERAGES (o el default)
-    real: dict            # cuotas 1X2 reales (home_odds, draw_odds, away_odds); {} sin ellas
+    real: dict            # home/draw/away_odds, total_line, over/under_odds; {} sin ellas
     exp_h: float
     exp_a: float
     diff: float           # fuerza local − fuerza visitante
@@ -53,14 +56,6 @@ class Match(NamedTuple):
     @property
     def lam(self) -> float:
         return self.exp_h + self.exp_a
-
-    @property
-    def over25(self) -> float:
-        return poisson_over(self.lam, 2)
-
-    @property
-    def btts(self) -> float:
-        return poisson_btts(self.exp_h, self.exp_a)
 
     @property
     def style(self) -> str:
@@ -71,17 +66,18 @@ class Match(NamedTuple):
         return self.fix.get("league", "") or "Liga"
 
     @property
-    def market_probs(self) -> dict | None:
-        """Probabilidades sin vig por clave de cuota; None sin los tres precios válidos."""
-        keys = ("home_odds", "draw_odds", "away_odds")
-        prices = [self.real.get(k) for k in keys]
-        if not all(isinstance(p, (int, float)) and p > 1 for p in prices):
-            return None
-        return dict(zip(keys, no_vig(*prices)))
+    def result_market(self) -> dict | None:
+        """Probabilidades sin vig de 1, X y 2; None sin los tres precios válidos."""
+        prices = [self.real.get(k) for k in RESULT_KEYS]
+        return dict(zip(RESULT_KEYS, no_vig(*prices))) if all(map(_is_price, prices)) else None
 
     @property
     def enough_games(self) -> bool:
         return min(self.hs.get("played", 0), self.as_.get("played", 0)) >= FOOTBALL_MIN_SIDE_GAMES
+
+
+def _is_price(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 1
 
 
 # ── Poisson ───────────────────────────────────────────────────────
@@ -90,9 +86,12 @@ def poisson_p(lam: float, k: int) -> float:
     return math.exp(-lam) * (lam ** k) / math.factorial(k)
 
 
-def poisson_over(lam: float, threshold: int) -> float:
-    p_under_eq = sum(poisson_p(lam, k) for k in range(threshold + 1))
-    return round(max(0.0, min(1.0, 1.0 - p_under_eq)), 4)
+def total_outcomes(lam: float, line: float) -> tuple[float, float, float]:
+    """(P(goles > línea), P(goles == línea), P(goles < línea)) con goles ~ Poisson(lam)."""
+    probs = [poisson_p(lam, k) for k in range(MAX_GOALS + 1)]
+    under = sum(p for k, p in enumerate(probs) if k < line)
+    push = probs[int(line)] if float(line).is_integer() and line <= MAX_GOALS else 0.0
+    return max(0.0, 1.0 - under - push), push, under
 
 
 def poisson_btts(exp_h: float, exp_a: float) -> float:
@@ -115,86 +114,76 @@ def _strength(stats: dict) -> float:
     return stats.get("win_rate", 33) + stats.get("form_pts", 7) * FORM_PTS_WEIGHT
 
 
-def _pick(pick_type: str, prob: float, conf: int, reasoning: str, data_quality: str = "high",
-          odds: float | None = None, real_odds: float | None = None) -> dict:
-    """Pick con cuota estimada (de la prob); con cuota real, esa cuota y su value."""
-    pick = {"type": pick_type, "confidence": conf, "our_prob": prob,
-            "est_odds": odds if odds is not None else est_odds(prob), "value": None,
-            "reasoning": reasoning, "data_quality": data_quality}
-    if not real_odds:
-        return pick
-    return {**pick, "est_odds": real_odds, "value": edge(prob, real_odds), "real_odds_source": True}
-
-
-def _result_pick(m: Match, pick_type: str, model_p: float, odds_key: str, reasoning: str,
-                 data_quality: str) -> list[dict]:
+def market_pick(pick_type: str, model_p: float, market_p: float, odds: float, reasoning: str,
+                weight: float, push: float = 0.0, data_quality: str = "high") -> dict | None:
     """
-    Pick de resultado (1, X o 2) anclado al mercado: mezcla el modelo con la prob. sin vig
-    y paga la cuota real. [] sin mercado completo, con pocos partidos o fuera de cuota / EV.
+    Pick anclado al mercado: prob = weight × modelo + resto × mercado sin vig (P de ganar sin
+    push), EV con push y cuota real. None fuera de cuota 1.30–3.50 o de EV 0–FOOTBALL_MAX_PICK_VALUE.
     """
-    market = m.market_probs
-    if market is None or not m.enough_games:
-        return []
-    odds = m.real[odds_key]
-    prob = round(FOOTBALL_MODEL_WEIGHT * model_p + (1 - FOOTBALL_MODEL_WEIGHT) * market[odds_key], 3)
-    value = edge(prob, odds)
+    prob = round(weight * model_p + (1 - weight) * market_p, 3)
+    value = expected_value(prob, odds, push)
     if not (FOOTBALL_MIN_ODDS <= odds <= FOOTBALL_MAX_ODDS and 0 <= value <= FOOTBALL_MAX_PICK_VALUE):
-        return []
-    return [_pick(pick_type, prob, int(prob * 100), sources_txt(model_p, market[odds_key]) + reasoning,
-                  data_quality=data_quality, real_odds=odds)]
+        return None
+    return {"type": pick_type, "confidence": int(prob * 100), "our_prob": prob, "est_odds": odds,
+            "value": value, "push_prob": round(push, 4), "real_odds_source": True,
+            "reasoning": sources_txt(model_p, market_p) + reasoning + push_txt(push),
+            "data_quality": data_quality}
 
 
-def _best_result(picks: list[dict]) -> list[dict]:
-    """1, X y 2 son excluyentes: queda el de más value."""
-    return [best_value(*picks)] if picks else []
+def _best(picks: list[dict | None]) -> list[dict]:
+    """Lados excluyentes de un mercado: queda el de más value."""
+    valid = [p for p in picks if p]
+    return [best_value(*valid)] if valid else []
+
+
+def expected_goals(hs: dict, as_: dict) -> tuple[float, float]:
+    """XG (local, visitante): multiplicativo con splits de local/visitante, si no aditivo."""
+    if all(k in s for s in (hs, as_) for k in VENUE_KEYS):
+        return (hs["league_home_gpg"] * hs["home_attack"] * as_["away_defense"],
+                hs["league_away_gpg"] * as_["away_attack"] * hs["home_defense"])
+    return ((hs.get("goals_for_pg", 0) + as_.get("goals_against_pg", 0)) / 2.0,
+            (as_.get("goals_for_pg", 0) + hs.get("goals_against_pg", 0)) / 2.0)
 
 
 def build_match(fix: dict, hs: dict, as_: dict, real: dict | None) -> Match:
-    exp_h = (hs.get("goals_for_pg", 0) + as_.get("goals_against_pg", 0)) / 2.0
-    exp_a = (as_.get("goals_for_pg", 0) + hs.get("goals_against_pg", 0)) / 2.0
+    exp_h, exp_a = expected_goals(hs, as_)
     diff = _strength(hs) + HOME_STRENGTH_BONUS - _strength(as_)
     league = LEAGUE_AVERAGES.get(fix.get("league", ""), LEAGUE_AVG_DEFAULT)
     return Match(fix, hs, as_, league, real or {}, exp_h, exp_a, diff)
 
 
-# ── Mercados ──────────────────────────────────────────────────────
+# ── Totales ───────────────────────────────────────────────────────
 
-def _goal_total_picks(m: Match) -> list[dict]:
-    """Over 2.5 en ligas ofensivas/equilibradas; Under 2.5 (u Over) en ligas defensivas."""
-    home, away = m.fix["home"], m.fix["away"]
-    over, under = m.over25, 1.0 - m.over25
-    xg = f"XG local {m.exp_h:.2f} + XG visitante {m.exp_a:.2f} = {m.lam:.2f} esperados. "
-    if m.style in OVER_STYLES:
-        if over < 0.50:
-            return []
-        return [_pick("Over 2.5 Goles", round(over, 3), min(80, int(over * 100 * 0.97)),
-                      xg + f"Poisson P(≥3 goles)={over*100:.0f}%. "
-                      f"{home} anota {m.hs.get('goals_for_pg', 0):.1f}/j y concede "
-                      f"{m.hs.get('goals_against_pg', 0):.1f}/j.", odds=est_odds(over))]
-    if under >= 0.52:
-        return [_pick("Under 2.5 Goles", round(under, 3), min(78, int(under * 100 * 0.97)),
-                      xg + f"Poisson P(≤2 goles)={under*100:.0f}%. "
-                      f"Liga defensiva: {home} concede {m.hs.get('goals_against_pg', 0):.1f}/j, "
-                      f"{away} {m.as_.get('goals_against_pg', 0):.1f}/j.", odds=est_odds(under))]
-    if over >= 0.52:
-        return [_pick("Over 2.5 Goles", round(over, 3), min(75, int(over * 100 * 0.95)),
-                      f"XG={m.lam:.2f}. Pese al estilo defensivo de {m.league_name}, "
-                      f"Poisson indica {over*100:.0f}% de probabilidad de Over 2.5.",
-                      odds=est_odds(over))]
-    return []
-
-
-def _btts_pick(m: Match, picks: list[dict]) -> list[dict]:
-    """Ambos marcan si Poisson da ≥ 56 % y no hay un Under 2.5 (se contradicen)."""
-    btts = m.btts
-    if btts < 0.56 or any(p["type"] == "Under 2.5 Goles" for p in picks):
+def _total_picks(m: Match) -> list[dict]:
+    """Over o Under de la línea real, el de más EV; [] sin línea y cuotas reales o pocos partidos."""
+    line, over_odds, under_odds = (m.real.get(k) for k in ("total_line", "over_odds", "under_odds"))
+    if not (isinstance(line, (int, float)) and _is_price(over_odds) and _is_price(under_odds)
+            and m.enough_games):
         return []
-    home, away = m.fix["home"], m.fix["away"]
-    return [_pick("Ambos Marcan (BTTS)", round(btts, 3), min(78, int(btts * 100 * 0.96)),
-                  f"P(local marca)={(1-math.exp(-m.exp_h))*100:.0f}%, "
-                  f"P(visitante marca)={(1-math.exp(-m.exp_a))*100:.0f}%. "
-                  f"{home} anota {m.hs.get('goals_for_pg', 0):.1f}/j; "
-                  f"{away} {m.as_.get('goals_for_pg', 0):.1f}/j.", odds=est_odds(btts))]
+    p_over, push, p_under = total_outcomes(m.lam, line)
+    if push >= 1:
+        return []
+    model_over, model_under = p_over / (1 - push), p_under / (1 - push)
+    market_over, market_under = no_vig(over_odds, under_odds)
+    xg = (f"XG {m.fix['home']} {m.exp_h:.2f} + {m.fix['away']} {m.exp_a:.2f} = {m.lam:.2f} goles, "
+          f"línea {line:.1f}")
+    return _best([
+        market_pick(f"Over {line:.1f} Goles", model_over, market_over, over_odds, xg,
+                    FOOTBALL_TOTALS_WEIGHT, push),
+        market_pick(f"Under {line:.1f} Goles", model_under, market_under, under_odds, xg,
+                    FOOTBALL_TOTALS_WEIGHT, push),
+    ])
+
+
+# ── Resultado (1X2) ───────────────────────────────────────────────
+
+def _result_pick(m: Match, pick_type: str, model_p: float, odds_key: str, reasoning: str,
+                 data_quality: str) -> dict | None:
+    market = m.result_market
+    if market is None or not m.enough_games:
+        return None
+    return market_pick(pick_type, model_p, market[odds_key], m.real[odds_key], reasoning,
+                       FOOTBALL_MODEL_WEIGHT, data_quality=data_quality)
 
 
 def _win_prob(diff: float, scale: float, floor: float, cap: float) -> float:
@@ -202,7 +191,7 @@ def _win_prob(diff: float, scale: float, floor: float, cap: float) -> float:
     return min(cap, max(floor, round(0.50 + (raw_p - 0.50) * scale, 3)))
 
 
-def _winner_pick(m: Match) -> list[dict]:
+def _winner_pick(m: Match) -> dict | None:
     """Victoria con diferencia de fuerza ≥ WIN_DIFF (logística), anclada al mercado."""
     home, away = m.fix["home"], m.fix["away"]
     if m.diff >= WIN_DIFF:
@@ -213,21 +202,21 @@ def _winner_pick(m: Match) -> list[dict]:
         return _result_pick(m, f"Victoria {away}", _win_prob(m.diff, 0.68, 0.54, 0.74), "away_odds",
                             f"{away}: {m.as_.get('win_rate', 0):.0f}% victorias, {_form_txt(m.as_)}. "
                             f"Ventaja visitante: {abs(m.diff):.0f} pts fuerza.", "high")
-    return []
+    return None
 
 
-def _draw_pick(m: Match) -> list[dict]:
+def _draw_pick(m: Match) -> dict | None:
     """Empate entre equipos igualados (tasa de empates + 6 pts, techo 62 %), anclado al mercado."""
     if abs(m.diff) > DRAW_MAX_DIFF or m.style not in DRAW_STYLES:
-        return []
+        return None
     league_draw = m.league.get("draw_pct", DEFAULT_DRAW_PCT)
     h_draw, a_draw = m.hs.get("draw_rate", league_draw), m.as_.get("draw_rate", league_draw)
     da = (h_draw + a_draw) / 2.0
     if da < 23 and league_draw < 26:
-        return []
+        return None
     model_p = round(min(0.62, max(da, league_draw) / 100.0 + 0.06), 3)
     if model_p < 0.62:
-        return []
+        return None
     home, away = m.fix["home"], m.fix["away"]
     return _result_pick(m, "Empate (X)", model_p, "draw_odds",
                         f"Equipos muy igualados (diff fuerza {abs(m.diff):.0f}). "
@@ -236,38 +225,7 @@ def _draw_pick(m: Match) -> list[dict]:
                         f"{m.league_name} promedio {league_draw}% empates.", "medium")
 
 
-def _double_chance_pick(m: Match) -> list[dict]:
-    """1X / X2 con ventaja moderada; cuota estimada con descuento (no hay cuota real)."""
-    if not DOUBLE_CHANCE_DIFF <= abs(m.diff) < WIN_DIFF:
-        return []
-    raw_p = 1.0 / (1.0 + math.exp(-abs(m.diff) / 22.0))
-    home, away = m.fix["home"], m.fix["away"]
-    if m.diff > 0:
-        pick_type = f"Doble Chance {home} (1X)"
-        prob = round(min(0.78, 0.62 + (raw_p - 0.5) * 0.55), 3)
-        reasoning = (f"{home}: {m.hs.get('win_rate', 0):.0f}% victorias, {_form_txt(m.hs)}. "
-                     f"Ventaja local de {m.diff:.0f} pts → 1X más seguro que 1 directo.")
-    else:
-        pick_type = f"Doble Chance {away} (X2)"
-        prob = round(min(0.76, 0.60 + (raw_p - 0.5) * 0.52), 3)
-        reasoning = (f"{away}: {m.as_.get('win_rate', 0):.0f}% victorias, {_form_txt(m.as_)}. "
-                     f"Ventaja visitante {abs(m.diff):.0f} pts — X2 cubre victoria o empate.")
-    # descuento sobre cuota, no sobre prob
-    return [_pick(pick_type, prob, int(prob * 100), reasoning, data_quality="medium",
-                  odds=round(est_odds(prob) * 0.72, 2))]
-
-
-def _over15_pick(m: Match) -> list[dict]:
-    """Over 1.5 conservador solo si ningún otro mercado dio pick y el XG total es ≥ 2."""
-    if m.lam < 2.0:
-        return []
-    prob = round(min(0.75, 0.54 + (m.lam - 2.0) * 0.08), 3)
-    return [_pick("Over 1.5 Goles", prob, int(prob * 100),
-                  f"XG total esperado: {m.lam:.2f} goles "
-                  f"({m.fix['home']} {m.exp_h:.2f} + {m.fix['away']} {m.exp_a:.2f}). "
-                  f"Pick conservador — {m.over25*100:.0f}% no supera umbral Over 2.5.",
-                  data_quality="medium")]
-
+# ── Partido ───────────────────────────────────────────────────────
 
 def is_pickable(pick: dict, min_conf: int = MIN_CONFIDENCE, value_threshold: float = VALUE_THRESHOLD) -> bool:
     """Confianza mínima, o value bet con cuota real (como NBA/NFL)."""
@@ -276,35 +234,14 @@ def is_pickable(pick: dict, min_conf: int = MIN_CONFIDENCE, value_threshold: flo
 
 
 def analyze_football_match(fix: dict, hs: dict, as_: dict, real: dict | None = None,
-                           min_conf: int = MIN_CONFIDENCE,
-                           value_threshold: float = VALUE_THRESHOLD) -> list[dict]:
-    """Hasta MAX_PICKS_MATCH picks del partido; `hs`/`as_` deben traer stats de ambos equipos."""
+                           min_conf: int = MIN_CONFIDENCE, value_threshold: float = VALUE_THRESHOLD,
+                           totals: bool | None = None) -> list[dict]:
+    """
+    A lo sumo un total y un resultado; `hs`/`as_` deben traer stats de ambos equipos.
+    `totals`: apostar totales (None = FOOTBALL_TOTALS_ENABLED; el backtest los pide siempre).
+    """
     m = build_match(fix, hs, as_, real)
-    picks = _goal_total_picks(m)
-    picks = [*picks, *_btts_pick(m, picks), *_best_result([*_winner_pick(m), *_draw_pick(m)]),
-             *_double_chance_pick(m)]
-    picks = picks or _over15_pick(m)
-    picks = [p for p in picks
-             if is_pickable(p, min_conf, value_threshold) and p.get("est_odds", 0) > FOOTBALL_MIN_ODDS]
-    picks.sort(key=lambda x: (x["confidence"], x.get("value") or -99), reverse=True)
-    return picks[:MAX_PICKS_MATCH]
-
-
-def apply_calibration(pick: dict, factors: dict) -> dict:
-    """
-    Nuevo pick con confidence y our_prob ajustados al historial real del modelo.
-    Con cuota real se recalcula el value; con cuota estimada, la cuota (sale de la prob).
-    """
-    if not factors:
-        return pick
-    bucket = (pick["confidence"] // 5) * 5
-    factor = factors.get(bucket, 1.0)
-    if factor == 1.0:
-        return pick
-    new_conf = min(95, max(55, int(pick["confidence"] * factor)))
-    new_prob = round(min(0.95, (pick.get("our_prob") or pick["confidence"] / 100) * factor), 3)
-    if pick.get("real_odds_source"):
-        priced = {"value": edge(new_prob, pick["est_odds"])}
-    else:
-        priced = {"est_odds": est_odds(new_prob)}
-    return {**pick, "confidence": new_conf, "our_prob": new_prob, **priced}
+    with_totals = FOOTBALL_TOTALS_ENABLED if totals is None else totals
+    picks = [*(_total_picks(m) if with_totals else []), *_best([_winner_pick(m), _draw_pick(m)])]
+    picks = [p for p in picks if is_pickable(p, min_conf, value_threshold)]
+    return sorted(picks, key=lambda p: (p["value"], p["confidence"]), reverse=True)
