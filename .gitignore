@@ -220,3 +220,6 @@ __marimo__/
 # others
 .idea/
 .vscode/
+# Claude Code (local tooling, worktrees, installed skills)
+.claude/
+skills-lock.json
