@@ -315,7 +315,7 @@ def get_unresolved_picks(sports: tuple[str, ...]) -> list[dict]:
     marks = ",".join("?" * len(sports))
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute(f"""
-            SELECT p.id, p.sport, p.home, p.away, p.pick_type, p.est_odds, p.payload
+            SELECT p.id, p.sport, p.run_date, p.home, p.away, p.pick_type, p.est_odds, p.payload
             FROM picks p
             LEFT JOIN results r ON r.pick_id = p.id
             WHERE p.sport IN ({marks})
@@ -323,8 +323,8 @@ def get_unresolved_picks(sports: tuple[str, ...]) -> list[dict]:
             ORDER BY p.id
         """, sports).fetchall()
 
-    cols = ("id", "sport", "home", "away", "pick_type", "est_odds")
-    return [{**dict(zip(cols, r[:6])), "payload": _load_payload(r[6])} for r in rows]
+    cols = ("id", "sport", "run_date", "home", "away", "pick_type", "est_odds")
+    return [{**dict(zip(cols, r[:7])), "payload": _load_payload(r[7])} for r in rows]
 
 
 def _load_payload(raw: str | None) -> dict:

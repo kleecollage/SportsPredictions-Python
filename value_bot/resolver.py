@@ -8,12 +8,14 @@ juego (kickoff del payload, en hora del este), no la de la corrida.
 import logging
 import re
 from collections import defaultdict
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from typing import NamedTuple
 
 from value_bot import db
 from value_bot.analysis.parlays import settle_parlay
 from value_bot.config import ESPN_NBA_URL, ESPN_NFL_URL, http_get
+from value_bot.scrapers.espn_lines import first_obj, obj, to_float
 from value_bot.sports.nfl import ESPN_TZ
 
 log = logging.getLogger(__name__)
@@ -21,6 +23,9 @@ log = logging.getLogger(__name__)
 SCOREBOARD_URLS = {"nba": ESPN_NBA_URL, "nfl": ESPN_NFL_URL}
 LOOKBACK_DAYS = 180       # juegos más viejos ya no se consultan
 FIRST_HALF_PERIODS = 2    # cuartos 1 y 2
+# Juegos que no se jugarán en esa fecha → void (como en la casa). Suspendido no: se reanuda.
+UNPLAYED_STATUSES = {"STATUS_POSTPONED": "pospuesto", "STATUS_CANCELED": "cancelado"}
+EXPIRED_SOURCE = "lookback"
 
 _NUM = r"(\d+(?:\.\d+)?)"
 _FIRST_HALF = re.compile(rf"^1ª mitad (over|under) {_NUM}$")
@@ -42,6 +47,13 @@ class FinalScore(NamedTuple):
     @property
     def total(self) -> int:
         return self.home_score + self.away_score
+
+
+class UnplayedGame(NamedTuple):
+    event_id: str
+    home: str
+    away: str
+    status: str      # "pospuesto" | "cancelado"
 
 
 # ── Evaluación (pura) ─────────────────────────────────────────────
@@ -123,41 +135,50 @@ def _profit(outcome: str, est_odds: float | None) -> float | None:
 # ── ESPN (parsing puro) ──────────────────────────────────────────
 
 def _periods(competitor: dict) -> tuple[float, ...]:
-    values = []
-    for line in competitor.get("linescores") or []:
-        try:
-            values.append(float(line.get("value")))
-        except (TypeError, ValueError):
-            return ()
-    return tuple(values)
+    """Puntos por periodo; () si falta alguno o no es un número (ESPN manda nulls)."""
+    lines = competitor.get("linescores")
+    values = [to_float(line) if isinstance(line, dict) else None
+              for line in (lines if isinstance(lines, list) else [])]
+    return () if None in values else tuple(values)
 
 
-def parse_final_scores(scoreboard: dict) -> list[FinalScore]:
-    """Scoreboard ESPN → marcadores de los juegos terminados."""
+def _events(scoreboard: object) -> Iterator[tuple[str, str, dict, dict]]:
+    """(id, estado, local, visitante) de cada evento con exactamente un local y un visitante."""
+    events = scoreboard.get("events") if isinstance(scoreboard, dict) else None
+    for event in events if isinstance(events, list) else []:
+        comp = first_obj(event.get("competitions") if isinstance(event, dict) else None)
+        competitors = comp.get("competitors")
+        competitors = [c for c in competitors if isinstance(c, dict)] if isinstance(competitors, list) else []
+        homes = [c for c in competitors if c.get("homeAway") == "home"]
+        aways = [c for c in competitors if c.get("homeAway") == "away"]
+        if len(homes) == 1 and len(aways) == 1:
+            status = obj(obj(comp, "status"), "type").get("name") or ""
+            yield str(event.get("id") or ""), status, homes[0], aways[0]
+
+
+def _name(competitor: dict) -> str:
+    return obj(competitor, "team").get("displayName") or ""
+
+
+def parse_final_scores(scoreboard: object) -> list[FinalScore]:
+    """Scoreboard ESPN → marcadores de los juegos terminados (tolera nulls y formas raras)."""
     finals = []
-    for event in scoreboard.get("events") or []:
-        comp = (event.get("competitions") or [{}])[0]
-        if not comp.get("status", {}).get("type", {}).get("name", "").startswith("STATUS_FINAL"):
+    for event_id, status, home, away in _events(scoreboard):
+        h_score, a_score = to_float(home.get("score")), to_float(away.get("score"))
+        if not status.startswith("STATUS_FINAL") or h_score is None or a_score is None:
             continue
-        competitors = comp.get("competitors") or []
-        home = next((c for c in competitors if c.get("homeAway") == "home"), None)
-        away = next((c for c in competitors if c.get("homeAway") == "away"), None)
-        if not (home and away):
-            continue
-        try:
-            h_score, a_score = int(float(home["score"])), int(float(away["score"]))
-        except (KeyError, TypeError, ValueError):
-            continue
-        finals.append(FinalScore(
-            str(event.get("id", "")),
-            home.get("team", {}).get("displayName", ""),
-            away.get("team", {}).get("displayName", ""),
-            h_score, a_score, _periods(home), _periods(away),
-        ))
+        finals.append(FinalScore(event_id, _name(home), _name(away), int(h_score), int(a_score),
+                                 _periods(home), _periods(away)))
     return finals
 
 
-def _find_game(pick: dict, games: list[FinalScore]) -> FinalScore | None:
+def parse_unplayed_games(scoreboard: object) -> list[UnplayedGame]:
+    """Juegos pospuestos o cancelados del scoreboard."""
+    return [UnplayedGame(event_id, _name(home), _name(away), UNPLAYED_STATUSES[status])
+            for event_id, status, home, away in _events(scoreboard) if status in UNPLAYED_STATUSES]
+
+
+def _find_game[G: (FinalScore, UnplayedGame)](pick: dict, games: list[G]) -> G | None:
     """Por event_id ESPN si el pick lo tiene (NFL); si no, por nombres completos."""
     event_id = pick["payload"].get("event_id")
     if event_id:
@@ -177,40 +198,92 @@ def _kickoff(payload: dict) -> datetime | None:
 
 # ── Resolución (BD + red) ─────────────────────────────────────────
 
-def _resolve_one(pick: dict, games: list[FinalScore]) -> bool:
-    game = _find_game(pick, games)
-    if not game:
+def _evaluate(pick: dict, game: FinalScore) -> str | None:
+    """
+    El pick_type usa los nombres del pick (p. ej. "Los Angeles Clippers" de api-sports) y
+    ESPN puede usar otros ("LA Clippers"). Con event_id el juego es ese mismo, así que sus
+    lados llevan los nombres del pick; si no, o si así no se resuelve, los de ESPN.
+    """
+    views = [game._replace(home=pick["home"], away=pick["away"])] if pick["payload"].get("event_id") else []
+    for view in (*views, game):
+        if (outcome := evaluate_pick(pick["pick_type"], view)) is not None:
+            return outcome
+    return None
+
+
+def _resolve_one(pick: dict, finals: list[FinalScore], unplayed: list[UnplayedGame]) -> bool:
+    if game := _find_game(pick, finals):
+        outcome = _evaluate(pick, game)
+        if outcome is None:
+            return False
+        db.save_result(pick["id"], outcome, f"{game.home_score}-{game.away_score}",
+                       _profit(outcome, pick["est_odds"]))
+        return True
+    if game := _find_game(pick, unplayed):
+        log.info("Pick %d: juego %s → void", pick["id"], game.status)
+        db.save_result(pick["id"], "void", game.status, 0.0)
+        return True
+    return False
+
+
+def _safe_resolve(pick: dict, finals: list[FinalScore], unplayed: list[UnplayedGame]) -> bool:
+    try:
+        return _resolve_one(pick, finals, unplayed)
+    except Exception:
+        log.exception("Pick %d: no se pudo resolver, sigue pendiente", pick["id"])
         return False
-    outcome = evaluate_pick(pick["pick_type"], game)
-    if outcome is None:
-        return False
-    db.save_result(pick["id"], outcome, f"{game.home_score}-{game.away_score}",
-                   _profit(outcome, pick["est_odds"]))
-    return True
+
+
+def _resolve_board(sport: str, game_date: str, picks: list[dict]) -> int:
+    """Picks de un deporte y fecha; un scoreboard raro no frena a los demás."""
+    board = http_get(SCOREBOARD_URLS[sport], params={"dates": game_date})
+    if not isinstance(board, dict) or not isinstance(board.get("events"), list):
+        log.warning("ESPN: scoreboard %s %s sin respuesta, %d picks siguen pendientes",
+                    sport.upper(), game_date, len(picks))
+        return 0
+    try:
+        finals, unplayed = parse_final_scores(board), parse_unplayed_games(board)
+    except Exception:
+        log.exception("ESPN: scoreboard %s %s ilegible, sus picks siguen pendientes", sport.upper(), game_date)
+        return 0
+    return sum(_safe_resolve(pick, finals, unplayed) for pick in picks)
+
+
+def _is_expired(pick: dict, kickoff: datetime | None, oldest: datetime) -> bool:
+    """Juego (o, sin kickoff legible, corrida) anterior a LOOKBACK_DAYS: ya no se consulta."""
+    if kickoff is not None:
+        return kickoff < oldest
+    return str(pick["run_date"] or "") < oldest.date().isoformat()
+
+
+def _void_expired(pick: dict) -> int:
+    log.warning("Pick %d sin resolver tras %d días → void", pick["id"], LOOKBACK_DAYS)
+    db.save_result(pick["id"], "void", None, 0.0, source=EXPIRED_SOURCE)
+    return 1
 
 
 def resolve_pending_picks(now: datetime | None = None) -> int:
     """
     Resuelve los picks NBA/NFL pendientes cuyo juego ya empezó (hasta
     LOOKBACK_DAYS atrás). Una consulta ESPN por deporte y fecha de juego.
-    Juegos sin terminar o mercados no soportados quedan pendientes.
+    Juegos sin terminar o mercados no soportados quedan pendientes; pospuestos,
+    cancelados y picks más viejos que LOOKBACK_DAYS quedan void (como los parlays).
     Retorna el número de picks resueltos.
     """
     now = now or datetime.now(timezone.utc)
     oldest = now - timedelta(days=LOOKBACK_DAYS)
 
+    resolved = 0
     by_board: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for pick in db.get_unresolved_picks(tuple(SCOREBOARD_URLS)):
         kickoff = _kickoff(pick["payload"])
-        if kickoff is None or not oldest <= kickoff <= now:
-            continue
-        game_date = kickoff.astimezone(ESPN_TZ).strftime("%Y%m%d")
-        by_board[(pick["sport"], game_date)].append(pick)
+        if _is_expired(pick, kickoff, oldest):
+            resolved += _void_expired(pick)
+        elif kickoff is not None and kickoff <= now:
+            by_board[(pick["sport"], kickoff.astimezone(ESPN_TZ).strftime("%Y%m%d"))].append(pick)
 
-    resolved = 0
     for (sport, game_date), picks in by_board.items():
-        games = parse_final_scores(http_get(SCOREBOARD_URLS[sport], params={"dates": game_date}))
-        resolved += sum(_resolve_one(pick, games) for pick in picks)
+        resolved += _resolve_board(sport, game_date, picks)
 
     log.info("Resultados: %d picks resueltos (%d fechas consultadas)", resolved, len(by_board))
     return resolved

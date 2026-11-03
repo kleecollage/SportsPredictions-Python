@@ -283,3 +283,140 @@ def test_games_older_than_lookback_are_not_queried(temp_db, espn):
     resolver.resolve_pending_picks(NOW)
 
     assert calls == []
+
+
+# ── Respuestas raras de ESPN: nunca frenan la resolución ─────────
+
+def _with(event, mutate):
+    mutate(event["competitions"][0])
+    return event
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda c: c.update(status=None),
+    lambda c: c["status"].update(type=None),
+    lambda c: c["competitors"][0].update(team=None),
+    lambda c: c["competitors"][0].update(linescores=[None]),
+    lambda c: c["competitors"].__setitem__(0, None),
+    lambda c: c.update(competitors=None),
+])
+def test_null_fields_in_a_final_do_not_raise(mutate):
+    board = {"events": [_with(_event("1", "A Team", "B Team", 1, 0), mutate),
+                        _event("2", "Detroit Pistons", "Boston Celtics", 105, 100)]}
+    assert [g.event_id for g in resolver.parse_final_scores(board)][-1] == "2"
+
+
+@pytest.mark.parametrize("board", [None, [], "roto", {"events": None}, {"events": [None]},
+                                   {"events": [{"competitions": [None]}]}])
+def test_unexpected_scoreboard_shapes_give_no_finals(board):
+    assert resolver.parse_final_scores(board) == []
+
+
+def test_final_with_null_period_keeps_score_without_periods():
+    ev = _event("1", "Detroit Pistons", "Boston Celtics", 105, 100, periods=([25, 25], [20, 20]))
+    ev["competitions"][0]["competitors"][0]["linescores"][1] = None
+    (game,) = resolver.parse_final_scores({"events": [ev]})
+    assert (game.home_score, game.home_periods) == (105, ())
+
+
+def test_one_broken_board_does_not_stop_the_others(temp_db, espn, monkeypatch, caplog):
+    boards, _ = espn
+    db.save_picks("2026-10-18", [
+        _nba("Detroit Pistons", "Boston Celtics", "Over 200.5 Puntos", kickoff="2026-10-19T23:00Z"),
+        _nba("New York Knicks", "Philadelphia 76ers", "Over 200.5 Puntos", kickoff="2026-10-20T23:00Z"),
+    ])
+    boards[(ESPN_NBA_URL, "20261020")] = [_event("3", "New York Knicks", "Philadelphia 76ers", 105, 100)]
+    real_parse = resolver.parse_final_scores
+
+    def parse(board):
+        if not board["events"]:
+            raise RuntimeError("ESPN raro")
+        return real_parse(board)
+    monkeypatch.setattr(resolver, "parse_final_scores", parse)
+
+    assert resolver.resolve_pending_picks(NOW) == 1
+    assert "20261019" in caplog.text
+
+
+@pytest.mark.parametrize("resp", [{}, None, [], {"events": None}])
+def test_scoreboard_without_answer_is_warned(temp_db, monkeypatch, caplog, resp):
+    monkeypatch.setattr(resolver, "http_get", lambda *a, **k: resp)
+    db.save_picks("2026-10-18", [_nba("Detroit Pistons", "Boston Celtics",
+                                      "Over 200.5 Puntos", kickoff="2026-10-20T23:00Z")])
+    assert resolver.resolve_pending_picks(NOW) == 0
+    assert "sin respuesta" in caplog.text and "20261020" in caplog.text
+
+
+def test_day_without_finals_is_not_a_warning(temp_db, espn, caplog):
+    db.save_picks("2026-10-18", [_nba("Detroit Pistons", "Boston Celtics",
+                                      "Over 200.5 Puntos", kickoff="2026-10-20T23:00Z")])
+    resolver.resolve_pending_picks(NOW)
+    assert "sin respuesta" not in caplog.text
+
+
+# ── Nombres distintos entre fuentes (api-sports vs ESPN) ──────────
+
+def _nba_event(pick_type, home="Los Angeles Clippers", away="Denver Nuggets", event_id="77"):
+    return {**_nba(home, away, pick_type), "event_id": event_id}
+
+
+@pytest.mark.parametrize("pick_type, expected", [
+    ("Victoria Los Angeles Clippers", ("win", "110-100", 0.91)),
+    ("Hándicap Los Angeles Clippers -12.5", ("loss", "110-100", -1.0)),
+    ("Hándicap Denver Nuggets +12.5", ("win", "110-100", 0.91)),
+])
+def test_pick_named_by_api_sports_resolves_against_espn_name(temp_db, espn, pick_type, expected):
+    boards, _ = espn
+    db.save_picks("2026-10-18", [_nba_event(pick_type)])
+    boards[(ESPN_NBA_URL, "20261020")] = [_event("77", "LA Clippers", "Denver Nuggets", 110, 100)]
+
+    assert resolver.resolve_pending_picks(NOW) == 1
+    assert _results()[pick_type] == expected
+
+
+def test_pick_type_with_espn_name_still_resolves(temp_db, espn):
+    boards, _ = espn
+    db.save_picks("2026-10-18", [_nba_event("Victoria LA Clippers")])
+    boards[(ESPN_NBA_URL, "20261020")] = [_event("77", "LA Clippers", "Denver Nuggets", 110, 100)]
+    assert resolver.resolve_pending_picks(NOW) == 1
+
+
+# ── Juegos que no se jugan y picks vencidos ───────────────────────
+
+@pytest.mark.parametrize("status", ["STATUS_POSTPONED", "STATUS_CANCELED"])
+def test_postponed_or_cancelled_game_is_void(temp_db, espn, status):
+    boards, _ = espn
+    db.save_picks("2026-10-11", [_nfl("Victoria Buffalo Bills", "moneyline")])
+    boards[(ESPN_NFL_URL, "20261012")] = [
+        _event("401", "Los Angeles Rams", "Buffalo Bills", 0, 0, status=status)]
+
+    assert resolver.resolve_pending_picks(NOW) == 1
+    assert _results()["Victoria Buffalo Bills"][0::2] == ("void", 0.0)
+
+
+def test_suspended_game_stays_pending(temp_db, espn):
+    boards, _ = espn
+    db.save_picks("2026-10-11", [_nfl("Victoria Buffalo Bills", "moneyline")])
+    boards[(ESPN_NFL_URL, "20261012")] = [
+        _event("401", "Los Angeles Rams", "Buffalo Bills", 0, 0, status="STATUS_SUSPENDED")]
+    assert resolver.resolve_pending_picks(NOW) == 0
+
+
+def test_pick_older_than_lookback_is_void(temp_db, espn, caplog):
+    _, calls = espn
+    db.save_picks("2026-03-30", [_nba("New York Knicks", "San Antonio Spurs",
+                                      "Over 222.6 Puntos", kickoff="2026-04-01T00:30Z")])
+
+    assert resolver.resolve_pending_picks(NOW) == 1
+    assert calls == [] and _results()["Over 222.6 Puntos"][0::2] == ("void", 0.0)
+    assert "void" in caplog.text
+
+
+def test_pick_without_kickoff_is_void_only_after_lookback(temp_db, espn):
+    db.save_picks("2026-06-17", [_nba("San Antonio Spurs", "New York Knicks",
+                                      "Over 220.5 Puntos", kickoff="05.06. 20:30")])
+    db.save_picks("2026-03-01", [_nba("San Antonio Spurs", "New York Knicks",
+                                      "Under 220.5 Puntos", kickoff="05.06. 20:30")])
+
+    assert resolver.resolve_pending_picks(NOW) == 1
+    assert set(_results()) == {"Under 220.5 Puntos"}
