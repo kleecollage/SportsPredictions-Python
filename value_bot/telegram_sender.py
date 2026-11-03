@@ -9,7 +9,6 @@ from telegram.constants import ParseMode
 
 from value_bot.config import BOT_TOKEN, CHAT_ID, VALUE_THRESHOLD
 from value_bot.store import store
-from value_bot.analysis.picks import _form_emoji
 
 log = logging.getLogger(__name__)
 
@@ -19,6 +18,10 @@ MONTHS_ES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
 SPORT_EMO = {"football": "⚽", "nba": "🏀", "nfl": "🏈"}
 KICKOFF_TZ = ZoneInfo("America/New_York")  # misma zona que el scheduler y las fechas ESPN
 PERF_MIN_SAMPLE = 5  # con menos picks resueltos el rendimiento se muestra con aviso
+
+
+def _form_emoji(form):
+    return "".join("🟢" if c == "W" else "🔴" for c in form)
 
 
 def bar(pct, n=8):

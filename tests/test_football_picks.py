@@ -1,10 +1,11 @@
-"""Fútbol y calibración (review picks.py: M4, L3, L4)."""
+"""Fútbol: calibración, sin stats sin picks y dedup por partido y fecha."""
 import sqlite3
 
 import pytest
 
 from value_bot import db
-from value_bot.analysis import picks as picks_mod
+from value_bot.analysis import football_model
+from value_bot.analysis import football_picks as picks_mod
 from value_bot.config import est_odds
 
 
@@ -42,7 +43,7 @@ def test_calibration_ignores_picks_before_model_since(temp_db):
 
 def test_calibration_with_real_odds_recomputes_value_not_odds():
     pick = {"confidence": 70, "our_prob": 0.70, "est_odds": 1.6, "value": 0.12, "real_odds_source": True}
-    out = picks_mod._apply_calibration(pick, {70: 0.9})
+    out = football_model.apply_calibration(pick, {70: 0.9})
     assert out["est_odds"] == 1.6
     assert out["value"] == pytest.approx(out["our_prob"] * 1.6 - 1, abs=0.0001)
     assert pick["confidence"] == 70  # no muta el original
@@ -50,7 +51,7 @@ def test_calibration_with_real_odds_recomputes_value_not_odds():
 
 def test_calibration_without_real_odds_recomputes_estimated_odds():
     pick = {"confidence": 70, "our_prob": 0.70, "est_odds": est_odds(0.70), "value": None}
-    out = picks_mod._apply_calibration(pick, {70: 0.9})
+    out = football_model.apply_calibration(pick, {70: 0.9})
     assert out["est_odds"] == est_odds(out["our_prob"])
     assert out["value"] is None
 
@@ -70,7 +71,7 @@ def _fix(i, date="2026-11-01"):
 def _patch(monkeypatch, fixtures, conf_by_home):
     monkeypatch.setattr(picks_mod, "collect_football_fixtures", lambda: fixtures)
     monkeypatch.setattr(picks_mod, "build_football_stats", lambda f: {})
-    monkeypatch.setattr(picks_mod, "_get_cal", lambda *a, **k: {})
+    monkeypatch.setattr(picks_mod, "get_calibration_factors", lambda *a, **k: {})
     monkeypatch.setattr(picks_mod, "analyze_football_match", lambda fix, h, a: [{
         "type": "Over 2.5 Goles", "confidence": conf_by_home[fix["home"]], "our_prob": 0.7,
         "est_odds": 1.6, "value": None, "data_quality": "high"}])

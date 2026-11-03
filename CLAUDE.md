@@ -58,11 +58,13 @@ Sin deportes activos, `main()` sale sin scrapear ni enviar (y sin resolver resul
 - `get_dimers_nfl_predictions`: `[]` = la API respondió sin partidos pendientes; `None` = falló (warning "sin respuesta", o "formato desconocido" si ninguna opción de `/round/options` es legible). `fetch_dimers_nfl` solo abre Chromium con `None`. Probabilidades fuera de (0, 1) y números no finitos se descartan.
 - Para conectarlo falta: emparejar equipos con ESPN por nombre exacto, confirmar el signo de `lineValue` del lado away contra `home_spread`, kickoff en ET y mezclar `win_prob` con el mercado (backtest antes de darle peso).
 
-## Fútbol (lógica Poisson, `analysis/picks.py`)
+## Fútbol (`sports/football.py`, `analysis/football_model.py`, `analysis/football_picks.py`)
+- `football_model` es puro (Poisson, mercados, `apply_calibration`; la cuota 1X2 real entra como argumento); `football_picks` pide fixtures, stats y cuotas, calibra, deduplica contra la BD y aplica los topes (máx. 2 picks del mismo tipo por liga, `MAX_PICKS_SPORT`).
 - Over/Under 2.5 y BTTS con Poisson sobre XG `(gf_propio + ga_rival)/2`; Under solo en ligas defensivas; BTTS no se combina con Under.
-- 1X2 con diff de fuerza ≥ 24 (logística), Doble Chance 12–23, Empate con diff ≤ 10 y draw_pct ≥ 26 %.
+- Fuerza = % victorias + 2.5 × pts de forma (últimos 5) (+10 local). 1X2 con diff ≥ 24 (logística), Doble Chance 12–23, Empate con diff ≤ 10 en ligas no ofensivas. En la práctica: la Doble Chance **nunca sale** (cuota estimada ×0.72 < 1.30), el Over 1.5 tampoco (para llegar al 62 % necesita XG ≥ 3.0 y ahí siempre sale antes un Over 2.5: ambos son código muerto) y el Empate casi nunca (prob = tasa de empates + 6 pts con techo 62 % → exige ≥ 56 % de empates).
+- Solo 1X2 y Empate usan cuota real; Over/Under, BTTS, DC y Over 1.5 llevan cuota estimada `0.95/p` (no apostable, como el NBA viejo): con conf ≥ 62 y cuota > 1.30 solo salen con probabilidad entre ~64 % y ~73 %; el 1X2 sin cuota real queda fuera (su techo 76 % da 1.25). Tests en `tests/test_football_model.py`.
 - Máx 3 picks/partido; value bet = edge ≥ 0.04 con cuota real (The Odds API).
-- Sin stats de ambos equipos → **sin picks** (ya no se usan promedios de liga ni el "Over 1.5" de respaldo).
+- Sin stats de ambos equipos → **sin picks** (ya no se usan promedios de liga ni el "Over 1.5" de respaldo sin stats).
 - Dedup: mismo pick (local, visitante, tipo) para la misma fecha del partido (`payload.date`) en cualquier corrida (`db.already_sent_for_game`), **antes** del tope `MAX_PICKS_SPORT`.
 - Capa 4 Flashscore (`scrapers/flashscore.py`): MLS, Brasileirão y Libertadores; cada fixture toma bandera, `odds_key` (cuota real de The Odds API) y temporada de `FALLBACK_LEAGUES_FOOTBALL`, y `kickoff` en ET de la hora HH:MM. Solo entran items con hora HH:MM (sin terminados ni en vivo); si todos los items vienen sin texto en `.event__time` se loguea warning de selector roto (venía vacío en oct-2026: la capa puede no aportar); si traen estado (Finished, en vivo) es solo `info` (liga sin partidos hoy, p. ej. fuera de temporada). Una liga que falla no tumba las demás.
 - football-data.org free: solo PL, PD, BL1, SA, FL1, CL, WC, BSA, PPL (MLS/Liga MX → 403); 10 req/min (sleep 7 s). api-football: header `x-apisports-key`, 100 req/día.
