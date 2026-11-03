@@ -84,7 +84,7 @@ def test_team_total_uses_that_teams_score():
 
 
 @pytest.mark.parametrize("pick_type", [
-    "Ganador Serie: New York Knicks", "Ambos Marcan (BTTS)", "Algo raro",
+    "Ganador Serie: New York Knicks", "Doble Chance Knicks (1X)", "Algo raro",
 ])
 def test_unsupported_markets_are_unresolved(pick_type):
     assert _eval(pick_type) is None

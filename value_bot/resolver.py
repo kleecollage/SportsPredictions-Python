@@ -1,20 +1,24 @@
 """
-Resolución automática de picks NBA/NFL con marcadores finales de ESPN.
+Resolución automática de picks: NBA/NFL con marcadores finales de ESPN y fútbol con los de
+football-data.org (a los 90 minutos; picks con event_id "fd:<id>" o, los anteriores a los
+ids, de fixtures de football-data por nombres).
 
 El runner no corre todos los días, así que cada corrida resuelve todos los picks
 pendientes cuyo juego ya empezó, consultando el scoreboard ESPN de la fecha del
-juego (kickoff del payload, en hora del este), no la de la corrida.
+juego (kickoff del payload, en hora del este) o football-data por ventanas de fechas
+(UTC), no la fecha de la corrida.
 """
 import logging
 import re
 from collections import defaultdict
 from collections.abc import Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import NamedTuple
 
 from value_bot import db
+from value_bot.analysis.football_ratings import fd_goals
 from value_bot.analysis.parlays import settle_parlay
-from value_bot.config import ESPN_NBA_URL, ESPN_NFL_URL, http_get
+from value_bot.config import ESPN_NBA_URL, ESPN_NFL_URL, fd_enabled, fd_get, http_get
 from value_bot.scrapers.espn_lines import first_obj, obj, to_float
 from value_bot.sports.nfl import ESPN_TZ
 
@@ -26,6 +30,11 @@ FIRST_HALF_PERIODS = 2    # cuartos 1 y 2
 # Juegos que no se jugarán en esa fecha → void (como en la casa). Suspendido no: se reanuda.
 UNPLAYED_STATUSES = {"STATUS_POSTPONED": "pospuesto", "STATUS_CANCELED": "cancelado"}
 EXPIRED_SOURCE = "lookback"
+FOOTBALL = "football"
+FD_PREFIX = "fd:"
+FD_SOURCE = "football-data"
+FD_UNPLAYED = {"POSTPONED": "pospuesto", "CANCELLED": "cancelado"}
+FD_WINDOW_DAYS = 10       # football-data no acepta rangos más largos en /matches
 
 _NUM = r"(\d+(?:\.\d+)?)"
 _FIRST_HALF = re.compile(rf"^1ª mitad (over|under) {_NUM}$")
@@ -33,6 +42,8 @@ _TEAM_TOTAL = re.compile(rf"^total (.+) (over|under) {_NUM}$")
 _GAME_TOTAL = re.compile(rf"^(over|under) {_NUM}(?: |$)")
 _SPREAD = re.compile(r"^h[aá]ndicap (.+) ([+-]\d+(?:\.\d+)?|pk)$")
 _MONEYLINE = re.compile(r"^victoria (.+?)(?: \(local\))?$")
+_DRAW = re.compile(r"^empate\b")
+_BTTS = re.compile(r"^ambos marcan\b")
 
 
 class FinalScore(NamedTuple):
@@ -94,12 +105,19 @@ def _first_half_total(score: FinalScore) -> float | None:
             + sum(score.away_periods[:FIRST_HALF_PERIODS]))
 
 
-def evaluate_pick(pick_type: str, score: FinalScore) -> str | None:
+def evaluate_pick(pick_type: str, score: FinalScore, draw_loses: bool = False) -> str | None:
     """
-    'win' | 'loss' | 'void' (push o empate en moneyline) según el marcador final.
+    'win' | 'loss' | 'void' (push, o empate en moneyline) según el marcador final.
+    `draw_loses`: mercado 1X2 de fútbol, donde el empate pierde la apuesta a una victoria.
     None si el mercado no se puede resolver con este marcador.
     """
     pt = " ".join(pick_type.lower().split())
+
+    if _DRAW.match(pt):
+        return "win" if score.home_score == score.away_score else "loss"
+
+    if _BTTS.match(pt):
+        return "win" if min(score.home_score, score.away_score) > 0 else "loss"
 
     if m := _FIRST_HALF.match(pt):
         half = _first_half_total(score)
@@ -119,7 +137,9 @@ def evaluate_pick(pick_type: str, score: FinalScore) -> str | None:
 
     if m := _MONEYLINE.match(pt):
         margin = _margin_for(score, m[1])
-        return None if margin is None else _sign(margin)
+        if margin is None:
+            return None
+        return "loss" if margin == 0 and draw_loses else _sign(margin)
 
     return None
 
@@ -178,6 +198,36 @@ def parse_unplayed_games(scoreboard: object) -> list[UnplayedGame]:
             for event_id, status, home, away in _events(scoreboard) if status in UNPLAYED_STATUSES]
 
 
+# ── football-data (parsing puro) ─────────────────────────────────
+
+def parse_fd_results(data: object) -> tuple[list[FinalScore], list[UnplayedGame]]:
+    """/matches de football-data → (terminados, pospuestos o cancelados); tolera formas raras."""
+    matches = data.get("matches") if isinstance(data, dict) else None
+    finals, unplayed = [], []
+    for m in matches if isinstance(matches, list) else []:
+        if not isinstance(m, dict) or not m.get("id"):
+            continue
+        event_id = f"{FD_PREFIX}{m['id']}"
+        home, away = obj(m, "homeTeam").get("name") or "", obj(m, "awayTeam").get("name") or ""
+        status = m.get("status")
+        if status == "FINISHED" and (goals := fd_goals(m.get("score"))):
+            finals.append(FinalScore(event_id, home, away, *goals, (), ()))
+        elif status in FD_UNPLAYED:
+            unplayed.append(UnplayedGame(event_id, home, away, FD_UNPLAYED[status]))
+    return finals, unplayed
+
+
+def fd_windows(dates: list[str]) -> list[tuple[str, str]]:
+    """Fechas ISO → rangos (desde, hasta) de menos de FD_WINDOW_DAYS días que las cubren."""
+    windows: list[tuple[str, str]] = []
+    for day in sorted(set(dates)):
+        if windows and (date.fromisoformat(day) - date.fromisoformat(windows[-1][0])).days < FD_WINDOW_DAYS:
+            windows[-1] = (windows[-1][0], day)
+        else:
+            windows.append((day, day))
+    return windows
+
+
 def _find_game[G: (FinalScore, UnplayedGame)](pick: dict, games: list[G]) -> G | None:
     """Por event_id ESPN si el pick lo tiene (NFL); si no, por nombres completos."""
     event_id = pick["payload"].get("event_id")
@@ -205,8 +255,9 @@ def _evaluate(pick: dict, game: FinalScore) -> str | None:
     lados llevan los nombres del pick; si no, o si así no se resuelve, los de ESPN.
     """
     views = [game._replace(home=pick["home"], away=pick["away"])] if pick["payload"].get("event_id") else []
+    draw_loses = pick["sport"] == FOOTBALL
     for view in (*views, game):
-        if (outcome := evaluate_pick(pick["pick_type"], view)) is not None:
+        if (outcome := evaluate_pick(pick["pick_type"], view, draw_loses)) is not None:
             return outcome
     return None
 
@@ -249,6 +300,38 @@ def _resolve_board(sport: str, game_date: str, picks: list[dict]) -> int:
     return sum(_safe_resolve(pick, finals, unplayed) for pick in picks)
 
 
+def _resolve_fd_window(date_from: str, date_to: str, picks: list[dict]) -> int:
+    """Picks de fútbol de una ventana de fechas con una sola llamada a football-data."""
+    data = fd_get("/matches", {"dateFrom": date_from, "dateTo": date_to})
+    if not isinstance(data, dict) or not isinstance(data.get("matches"), list):
+        log.warning("football-data: /matches %s…%s sin respuesta, %d picks siguen pendientes",
+                    date_from, date_to, len(picks))
+        return 0
+    finals, unplayed = parse_fd_results(data)
+    return sum(_safe_resolve(pick, finals, unplayed) for pick in picks)
+
+
+def _resolve_football(picks_by_day: dict[str, list[dict]]) -> tuple[int, int]:
+    """(picks resueltos, ventanas consultadas a football-data)."""
+    if not picks_by_day:
+        return 0, 0
+    if not fd_enabled():
+        log.warning("football-data sin token: %d picks de fútbol siguen pendientes",
+                    sum(map(len, picks_by_day.values())))
+        return 0, 0
+    windows = fd_windows(list(picks_by_day))
+    resolved = sum(_resolve_fd_window(start, end, [p for day, picks in picks_by_day.items()
+                                                   if start <= day <= end for p in picks])
+                   for start, end in windows)
+    return resolved, len(windows)
+
+
+def _is_fd_pick(pick: dict) -> bool:
+    """Con id "fd:", o de un fixture de football-data previo a los ids (se busca por nombres)."""
+    payload = pick["payload"]
+    return str(payload.get("event_id") or "").startswith(FD_PREFIX) or payload.get("source") == FD_SOURCE
+
+
 def _is_expired(pick: dict, kickoff: datetime | None, oldest: datetime) -> bool:
     """Juego (o, sin kickoff legible, corrida) anterior a LOOKBACK_DAYS: ya no se consulta."""
     if kickoff is not None:
@@ -264,8 +347,9 @@ def _void_expired(pick: dict) -> int:
 
 def resolve_pending_picks(now: datetime | None = None) -> int:
     """
-    Resuelve los picks NBA/NFL pendientes cuyo juego ya empezó (hasta
-    LOOKBACK_DAYS atrás). Una consulta ESPN por deporte y fecha de juego.
+    Resuelve los picks NBA/NFL/fútbol pendientes cuyo juego ya empezó (hasta
+    LOOKBACK_DAYS atrás). Una consulta ESPN por deporte y fecha de juego; fútbol, una a
+    football-data por ventana de fechas (solo picks de fixtures de football-data).
     Juegos sin terminar o mercados no soportados quedan pendientes; pospuestos,
     cancelados y picks más viejos que LOOKBACK_DAYS quedan void (como los parlays).
     Retorna el número de picks resueltos.
@@ -275,17 +359,25 @@ def resolve_pending_picks(now: datetime | None = None) -> int:
 
     resolved = 0
     by_board: dict[tuple[str, str], list[dict]] = defaultdict(list)
-    for pick in db.get_unresolved_picks(tuple(SCOREBOARD_URLS)):
+    football_by_day: dict[str, list[dict]] = defaultdict(list)
+    for pick in db.get_unresolved_picks((*SCOREBOARD_URLS, FOOTBALL)):
         kickoff = _kickoff(pick["payload"])
         if _is_expired(pick, kickoff, oldest):
             resolved += _void_expired(pick)
-        elif kickoff is not None and kickoff <= now:
+        elif kickoff is None or kickoff > now:
+            continue
+        elif pick["sport"] != FOOTBALL:
             by_board[(pick["sport"], kickoff.astimezone(ESPN_TZ).strftime("%Y%m%d"))].append(pick)
+        elif _is_fd_pick(pick):
+            football_by_day[kickoff.astimezone(timezone.utc).date().isoformat()].append(pick)
 
     for (sport, game_date), picks in by_board.items():
         resolved += _resolve_board(sport, game_date, picks)
+    football_resolved, fd_calls = _resolve_football(football_by_day)
+    resolved += football_resolved
 
-    log.info("Resultados: %d picks resueltos (%d fechas consultadas)", resolved, len(by_board))
+    log.info("Resultados: %d picks resueltos (%d fechas ESPN, %d ventanas football-data)",
+             resolved, len(by_board), fd_calls)
     return resolved
 
 
