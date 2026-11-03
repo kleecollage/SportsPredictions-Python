@@ -216,37 +216,45 @@ for _var, _desc in _optional_tokens.items():
 
 # ── HTTP helpers ──────────────────────────────────────────────────
 
-def _http_get_raw(url, headers, params, timeout):
-    """Inner request que tenacity puede reintentar con backoff exponencial."""
+class _RetryableStatus(requests.exceptions.RequestException):
+    """429 o 5xx: lo único que vale la pena reintentar (cada request gasta cuota)."""
+
+
+_EMPTY = object()   # código definitivo: {} sin reintentar
+
+
+def _fetch_json(url: str, headers: dict, params: dict, timeout: float, skip_codes: tuple[int, ...]):
+    """Una sola request por intento; tenacity reintenta solo _RetryableStatus."""
     r = requests.get(url, headers=headers, params=params, timeout=timeout)
-    if r.status_code == 429:
-        raise requests.exceptions.RequestException(f"rate-limit 429: {url[:60]}")
-    r.raise_for_status()
+    if r.status_code in skip_codes:
+        log.warning("HTTP %d (definitivo): %s", r.status_code, url[:80])
+        return _EMPTY
+    if r.status_code == 429 or r.status_code >= 500:
+        raise _RetryableStatus(f"HTTP {r.status_code}: {url[:60]}")
+    if not 200 <= r.status_code < 300:
+        log.warning("HTTP %d sin reintento: %s", r.status_code, url[:80])
+        return _EMPTY
     return r.json()
 
 
 if TENACITY_OK:
-    _http_get_raw = retry(
+    _fetch_json = retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=30),
-        retry=retry_if_exception_type(requests.exceptions.RequestException),
+        retry=retry_if_exception_type(_RetryableStatus),
         reraise=True,
-    )(_http_get_raw)
+    )(_fetch_json)
 
 
-def http_get(url, headers=None, params=None, skip_codes=(403, 404), timeout=12):
-    h = headers or {}
-    p = params or {}
+def http_get(url: str, headers: dict | None = None, params: dict | None = None,
+             skip_codes: tuple[int, ...] = (403, 404), timeout: float = 12):
+    """JSON de la URL o {} si falla; errores de red no se reintentan (como antes)."""
     try:
-        # Verificar códigos definitivos antes de reintentar
-        probe = requests.get(url, headers=h, params=p, timeout=timeout)
-        if probe.status_code in skip_codes:
-            log.warning("HTTP %d (definitivo): %s", probe.status_code, url[:80])
-            return {}
-        if probe.status_code not in (200, 201):
-            # Delegar el reintento a tenacity para 429 y 5xx
-            return _http_get_raw(url, h, p, timeout)
-        return probe.json()
+        data = _fetch_json(url, headers or {}, params or {}, timeout, skip_codes)
+        return {} if data is _EMPTY else data
+    except ValueError as exc:   # antes que RequestException: el JSONDecodeError de requests es ambos
+        log.warning("HTTP JSON inválido [%s]: %s", url[:60], exc)
+        return {}
     except requests.exceptions.RequestException as exc:
         log.warning("HTTP definitivamente falló [%s]: %s", url[:60], exc)
         return {}
