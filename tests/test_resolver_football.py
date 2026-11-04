@@ -78,7 +78,7 @@ def test_a_draw_loses_a_football_win_bet_but_pushes_a_moneyline():
 
 @pytest.fixture
 def temp_db(tmp_path, monkeypatch):
-    monkeypatch.setattr(db, "DB_PATH", tmp_path / "picks.db")
+    monkeypatch.setattr(db.connection, "DB_PATH", tmp_path / "picks.db")
     db.init_db()
 
 

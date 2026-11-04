@@ -55,7 +55,7 @@ def wired(monkeypatch):
                         lambda ctx, tid: TeamScores([(24.0, 20.0)] * 6, current=tid != "6",
                                                previous=((30.0, 10.0),) * 17 if tid == "6" else ()))
     monkeypatch.setattr(nfl_picks, "analyze_nfl_game", fake_analyze)
-    monkeypatch.setattr(db, "already_sent_for_event", lambda *_, **__: False)
+    monkeypatch.setattr(db.picks, "already_sent_for_event", lambda *_, **__: False)
     return calls
 
 
@@ -86,7 +86,7 @@ def test_value_picks_first_then_confidence(wired):
 
 def test_skips_markets_already_sent_for_that_event(wired, monkeypatch):
     sent = {("evt-9", "moneyline")}
-    monkeypatch.setattr(db, "already_sent_for_event",
+    monkeypatch.setattr(db.picks, "already_sent_for_event",
                         lambda event_id, market, sport: (event_id, market) in sent)
     types = [p["type"] for p in nfl_picks.get_nfl_picks(RunContext())]
     assert "Victoria Green Bay Packers" not in types
@@ -117,7 +117,7 @@ def test_skips_side_bet_when_any_side_bet_was_already_sent_for_that_event(wired,
     # Corrida previa mandó un spread (de cualquier equipo): otro ML/spread sería la misma
     # apuesta o una cobertura
     sent = {("evt-12", "spread")}
-    monkeypatch.setattr(db, "already_sent_for_event",
+    monkeypatch.setattr(db.picks, "already_sent_for_event",
                         lambda event_id, market, sport: (event_id, market) in sent)
     types = [p["type"] for p in nfl_picks.get_nfl_picks(RunContext())]
     assert "Victoria Kansas City Chiefs" not in types
@@ -126,7 +126,7 @@ def test_skips_side_bet_when_any_side_bet_was_already_sent_for_that_event(wired,
 
 def test_totals_are_not_blocked_by_side_bets(wired, monkeypatch):
     sent = {("evt-9", "moneyline"), ("evt-9", "spread")}
-    monkeypatch.setattr(db, "already_sent_for_event",
+    monkeypatch.setattr(db.picks, "already_sent_for_event",
                         lambda event_id, market, sport: (event_id, market) in sent)
     assert "Under 53.5 Puntos" in [p["type"] for p in nfl_picks.get_nfl_picks(RunContext())]
 

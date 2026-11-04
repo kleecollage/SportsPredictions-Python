@@ -6,7 +6,7 @@ from value_bot import db
 
 @pytest.fixture
 def temp_db(tmp_path, monkeypatch):
-    monkeypatch.setattr(db, "DB_PATH", tmp_path / "picks.db")
+    monkeypatch.setattr(db.connection, "DB_PATH", tmp_path / "picks.db")
     db.init_db()
 
 

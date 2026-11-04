@@ -94,7 +94,7 @@ def test_unsupported_markets_are_unresolved(pick_type):
 
 @pytest.fixture
 def temp_db(tmp_path, monkeypatch):
-    monkeypatch.setattr(db, "DB_PATH", tmp_path / "picks.db")
+    monkeypatch.setattr(db.connection, "DB_PATH", tmp_path / "picks.db")
     db.init_db()
 
 
@@ -137,7 +137,7 @@ def _nfl(pick_type, market, event_id="401", home="Los Angeles Rams", away="Buffa
 
 
 def _results():
-    with sqlite3.connect(db.DB_PATH) as conn:
+    with sqlite3.connect(db.connection.DB_PATH) as conn:
         return {pt: (o, s, p) for pt, o, s, p in conn.execute("""
             SELECT p.pick_type, r.outcome, r.actual_score, r.profit_units
             FROM results r JOIN picks p ON p.id = r.pick_id""")}

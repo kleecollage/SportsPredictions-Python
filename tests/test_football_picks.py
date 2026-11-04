@@ -9,7 +9,7 @@ from value_bot.analysis import football_picks as picks_mod
 
 @pytest.fixture
 def temp_db(tmp_path, monkeypatch):
-    monkeypatch.setattr(db, "DB_PATH", tmp_path / "picks.db")
+    monkeypatch.setattr(db.connection, "DB_PATH", tmp_path / "picks.db")
     db.init_db()
 
 
@@ -18,7 +18,7 @@ def _resolved(sport, run_date, n, wins, confidence=70):
               "confidence": confidence, "est_odds": 1.8, "our_prob": confidence / 100, "data_quality": "high"}
              for i in range(n)]
     db.save_picks(run_date, picks)
-    with sqlite3.connect(db.DB_PATH) as conn:
+    with sqlite3.connect(db.connection.DB_PATH) as conn:
         ids = [r[0] for r in conn.execute("SELECT id FROM picks WHERE sport=? AND run_date=? ORDER BY id",
                                           (sport, run_date))]
     for i, pick_id in enumerate(ids):

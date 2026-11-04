@@ -74,8 +74,8 @@ def test_api_sports_nba_only_not_started_games(monkeypatch, short, kept):
 
 @pytest.fixture(params=[True, False], ids=["pandas", "sql"])
 def temp_db(request, tmp_path, monkeypatch):
-    monkeypatch.setattr(db, "DB_PATH", tmp_path / "picks.db")
-    monkeypatch.setattr(db, "_PANDAS_OK", request.param and db._PANDAS_OK)
+    monkeypatch.setattr(db.connection, "DB_PATH", tmp_path / "picks.db")
+    monkeypatch.setattr(db.reports, "_PANDAS_OK", request.param and db.reports._PANDAS_OK)
     db.init_db()
 
 
@@ -85,7 +85,7 @@ def _resolved(run_date, outcome, profit, resolved_days_ago=0):
                               "data_quality": "high"}])
     pick_id = max(p["id"] for p in db.get_unresolved_picks(("nfl",)))
     db.save_result(pick_id, outcome, "1-0", profit)
-    with sqlite3.connect(db.DB_PATH) as conn:
+    with sqlite3.connect(db.connection.DB_PATH) as conn:
         conn.execute("UPDATE results SET resolved_at = datetime('now', ?) WHERE pick_id = ?",
                      (f"-{resolved_days_ago} days", pick_id))
 

@@ -103,7 +103,7 @@ def test_settle_parlay(legs, expected):
 
 @pytest.fixture
 def temp_db(tmp_path, monkeypatch):
-    monkeypatch.setattr(db, "DB_PATH", tmp_path / "picks.db")
+    monkeypatch.setattr(db.connection, "DB_PATH", tmp_path / "picks.db")
     db.init_db()
 
 
@@ -139,7 +139,7 @@ def test_resolve_parlays_uses_leg_results(temp_db):
     db.save_result(ids["H1"], "win", "1-0", 1.0)
     assert resolver.resolve_parlays() == 1
     assert db.get_pending_parlays() == []
-    with sqlite3.connect(db.DB_PATH) as conn:
+    with sqlite3.connect(db.connection.DB_PATH) as conn:
         assert conn.execute("SELECT outcome, profit_units FROM parlays").fetchone() == ("win", 3.0)
 
 
@@ -161,11 +161,11 @@ def test_parlay_summary_only_counts_active_sports_and_current_model(temp_db):
 
 def test_parlay_with_a_missing_leg_pick_counts_that_leg_as_void(temp_db):
     ids = _saved_parlay()
-    with sqlite3.connect(db.DB_PATH) as conn:
+    with sqlite3.connect(db.connection.DB_PATH) as conn:
         conn.execute("DELETE FROM picks WHERE id = ?", (ids["H1"],))
     db.save_result(ids["H0"], "win", "1-0", 1.0)
     assert resolver.resolve_parlays() == 1
-    with sqlite3.connect(db.DB_PATH) as conn:
+    with sqlite3.connect(db.connection.DB_PATH) as conn:
         assert conn.execute("SELECT outcome, profit_units FROM parlays").fetchone() == ("win", 1.0)
 
 
@@ -174,7 +174,7 @@ def test_parlay_still_open_after_the_lookback_is_voided(temp_db):
     _saved_parlay("2026-01-01")
     assert resolver.resolve_parlays(now=datetime(2026, 3, 1, tzinfo=timezone.utc)) == 0
     assert resolver.resolve_parlays(now=datetime(2026, 7, 1, tzinfo=timezone.utc)) == 1
-    with sqlite3.connect(db.DB_PATH) as conn:
+    with sqlite3.connect(db.connection.DB_PATH) as conn:
         assert conn.execute("SELECT outcome, profit_units FROM parlays").fetchone() == ("void", 0.0)
 
 

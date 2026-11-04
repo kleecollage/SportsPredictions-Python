@@ -22,7 +22,7 @@ import asyncio
 import logging
 
 from value_bot.config import validate_env
-from value_bot.db import DB_PATH
+from value_bot.db.connection import DB_PATH
 
 log = logging.getLogger(__name__)
 

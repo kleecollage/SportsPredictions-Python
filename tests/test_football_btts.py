@@ -88,7 +88,7 @@ STRONG = _stats(1.8, 1.6)
 
 @pytest.fixture
 def run(tmp_path, monkeypatch):
-    monkeypatch.setattr(db, "DB_PATH", tmp_path / "picks.db")
+    monkeypatch.setattr(db.connection, "DB_PATH", tmp_path / "picks.db")
     db.init_db()
     ctx = RunContext()
     ctx.football.fixtures.extend([

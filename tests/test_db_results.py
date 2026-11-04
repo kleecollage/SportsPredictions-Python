@@ -8,7 +8,7 @@ from value_bot import db
 
 @pytest.fixture
 def temp_db(tmp_path, monkeypatch):
-    monkeypatch.setattr(db, "DB_PATH", tmp_path / "picks.db")
+    monkeypatch.setattr(db.connection, "DB_PATH", tmp_path / "picks.db")
     db.init_db()
 
 
@@ -20,7 +20,7 @@ def _pick(home="Detroit Pistons", away="Boston Celtics", pick_type="Under 211.1 
 
 
 def _results():
-    with sqlite3.connect(db.DB_PATH) as conn:
+    with sqlite3.connect(db.connection.DB_PATH) as conn:
         return conn.execute("SELECT pick_id, outcome, profit_units FROM results").fetchall()
 
 
@@ -36,7 +36,7 @@ def test_save_result_twice_updates_the_same_row(temp_db):
 
 def test_init_db_removes_duplicate_results_before_creating_unique_index(tmp_path, monkeypatch):
     path = tmp_path / "old.db"
-    monkeypatch.setattr(db, "DB_PATH", path)
+    monkeypatch.setattr(db.connection, "DB_PATH", path)
     with sqlite3.connect(path) as conn:  # esquema anterior, sin índice UNIQUE
         conn.execute("CREATE TABLE results (id INTEGER PRIMARY KEY AUTOINCREMENT, "
                      "pick_id INTEGER NOT NULL, outcome TEXT, actual_score TEXT, "
@@ -88,7 +88,7 @@ def _resolved(run_date, sport, outcome, profit):
 @pytest.fixture(params=[True, False], ids=["pandas", "sql"])
 def mixed_history(request, temp_db, monkeypatch):
     from datetime import date, timedelta
-    monkeypatch.setattr(db, "_PANDAS_OK", request.param and db._PANDAS_OK)
+    monkeypatch.setattr(db.reports, "_PANDAS_OK", request.param and db.reports._PANDAS_OK)
     today, old = date.today(), date.today() - timedelta(days=3)
     _resolved(old.isoformat(), "nfl", "loss", -1.0)      # modelo NFL anterior
     _resolved(today.isoformat(), "nfl", "win", 1.8)      # modelo NFL actual
