@@ -18,7 +18,8 @@ from typing import NamedTuple
 from value_bot import db
 from value_bot.analysis.football_ratings import fd_goals
 from value_bot.analysis.parlays import settle_parlay
-from value_bot.config import ESPN_NBA_URL, ESPN_NFL_URL, fd_enabled, fd_get, http_get
+from value_bot.config import ESPN_NBA_URL, ESPN_NFL_URL, fd_enabled
+from value_bot.http_client import fd_get, http_get
 from value_bot.scrapers.espn_lines import first_obj, obj, to_float
 from value_bot.sports.nfl import ESPN_TZ
 

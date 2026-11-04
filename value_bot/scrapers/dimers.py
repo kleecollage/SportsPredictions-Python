@@ -16,7 +16,8 @@ import re
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
-from value_bot.config import PLAYWRIGHT_ENABLED, PLAYWRIGHT_TIMEOUT, USER_AGENTS, http_get
+from value_bot.config import PLAYWRIGHT_ENABLED, PLAYWRIGHT_TIMEOUT, USER_AGENTS
+from value_bot.http_client import http_get
 from value_bot.scrapers.playwright_scraper import PLAYWRIGHT_OK, _build_stealth_browser, _human_delay
 
 log = logging.getLogger(__name__)

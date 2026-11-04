@@ -3,7 +3,8 @@ import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from value_bot.config import ESPN_NBA_URL, http_get
+from value_bot.config import ESPN_NBA_URL
+from value_bot.http_client import http_get
 from value_bot.scrapers.espn_lines import first_obj, obj, parse_lines
 from value_bot.store import store
 

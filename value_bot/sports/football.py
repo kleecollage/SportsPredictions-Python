@@ -7,8 +7,9 @@ from zoneinfo import ZoneInfo
 from value_bot.config import (
     AFL_BASE, DAYS_AHEAD, MIN_FIXTURES_TOP,
     TOP_LEAGUES_FOOTBALL, FALLBACK_LEAGUES_FOOTBALL,
-    fd_enabled, fd_get, api_sports_get, afl_season,
+    fd_enabled, afl_season,
 )
+from value_bot.http_client import api_sports_get, fd_get
 from value_bot.analysis.football_ratings import team_ratings
 from value_bot.store import store
 

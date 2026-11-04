@@ -26,8 +26,9 @@ from value_bot.analysis.nfl_model import (
 )
 from value_bot.config import (
     ESPN_NFL_SCHEDULE_URL, ESPN_NFL_URL, MIN_CONFIDENCE, NFL_MIN_GAMES, VALUE_THRESHOLD,
-    http_get, nfl_season,
+    nfl_season,
 )
+from value_bot.http_client import http_get
 from value_bot.sports.nfl import (
     PICKABLE_SEASON_TYPES, REGULAR_SEASON, SCHEDULE_FETCH_WORKERS, _status_name, _to_float,
     fetch_team_ids, league_average,

@@ -29,8 +29,9 @@ from value_bot.analysis.nba_model import (
     analyze_nba_game, cover_prob, data_quality, model_weight, over_prob, project_nba, win_prob,
 )
 from value_bot.config import (
-    ESPN_NBA_URL, MIN_CONFIDENCE, NBA_MIN_GAMES, VALUE_THRESHOLD, http_get, nba_season_start_year,
+    ESPN_NBA_URL, MIN_CONFIDENCE, NBA_MIN_GAMES, VALUE_THRESHOLD, nba_season_start_year,
 )
+from value_bot.http_client import http_get
 from value_bot.scrapers.espn_lines import obj, to_float
 from value_bot.tools.backtest_common import grade, has_full_market, outcome, parse_dt, parse_pickcenter
 from value_bot.tools.backtest_report import render_report

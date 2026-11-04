@@ -8,7 +8,8 @@ Analista senior de apuestas multi-deporte. Genera picks + parlays diarios y los 
 - Entorno: `.venv` (Python 3.14). `pip install -r requirements-dev.txt` + `playwright install chromium`.
 - Una corrida: `python -m value_bot.main` · reporte semanal: `python -m value_bot.main --weekly` · con BTTS bajo demanda (gasta créditos, selector en terminal): `python -m value_bot.main --btts`
 - Scheduler: `python -m value_bot.scheduler` (APScheduler, 9:00 y lunes 9:05 **America/New_York**; jobstore en `picks_history.db`). Servicio launchd: `value_bot/scheduler.plist` → `.venv/bin/python`. Logs útiles en `scheduler_error.log` (logging va a stderr).
-- Tests: `.venv/bin/python -m pytest -q` (pytest; `tests/conftest.py` pone variables de Telegram falsas).
+- Tests: `.venv/bin/python -m pytest -q` (pytest; `tests/conftest.py` pone variables de Telegram falsas antes de que `config` cargue `.env`, para que ningún test use el bot real).
+- `config.py` no tiene efectos al importarse (salvo `load_dotenv` y logging): `validate_env()` la llaman `main` (`__main__`) y `scheduler`. HTTP en `http_client.py` (`http_get`, `fd_get`, `api_sports_get`): una request por intento, solo 429/5xx se reintentan (3 en total), otros 4xx y errores de red → `{}` sin reintento.
 - **El runner NO corre todos los días** (Mac apagada). Nada puede depender de corridas diarias ni de estado en memoria entre corridas: lo persistente va a `picks_history.db`.
 
 ## Secretos

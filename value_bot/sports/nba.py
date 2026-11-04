@@ -8,8 +8,9 @@ import requests
 
 from value_bot.config import (
     ABB_BASE, NBA_API_TIMEOUT, NBA_LEAGUE_ID, NBA_MIN_GAMES,
-    DAYS_AHEAD, api_sports_get, nba_season, nba_api_season,
+    DAYS_AHEAD, nba_season, nba_api_season,
 )
+from value_bot.http_client import api_sports_get
 from value_bot.store import store
 from value_bot.scrapers.espn import espn_nba_games, espn_parse_nba, now_et
 

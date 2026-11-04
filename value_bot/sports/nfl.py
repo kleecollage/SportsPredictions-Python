@@ -7,8 +7,9 @@ from zoneinfo import ZoneInfo
 
 from value_bot.config import (
     DAYS_AHEAD, ESPN_NFL_SCHEDULE_URL, ESPN_NFL_TEAMS_URL, ESPN_NFL_URL, NFL_MIN_GAMES,
-    http_get, nfl_season,
+    nfl_season,
 )
+from value_bot.http_client import http_get
 from value_bot.scrapers.espn_lines import obj as _obj, parse_lines as _parse_lines, to_float as _to_float
 from value_bot.store import store
 

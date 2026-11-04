@@ -5,7 +5,7 @@ import logging
 import sys
 from datetime import datetime
 
-from value_bot.config import FLASHSCORE_ENABLED, MODEL_SINCE, SPORTS_ENABLED
+from value_bot.config import FLASHSCORE_ENABLED, MODEL_SINCE, SPORTS_ENABLED, validate_env
 from value_bot.scrapers.playwright_scraper import PLAYWRIGHT_OK
 from value_bot.scrapers.flashscore import run_playwright_scrapers
 from value_bot.analysis.football_picks import get_btts_picks, get_football_picks
@@ -172,6 +172,7 @@ async def weekly_report():
 
 
 if __name__ == "__main__":
+    validate_env()
     if "--weekly" in sys.argv:
         asyncio.run(weekly_report())
     else:
