@@ -1,14 +1,13 @@
 """db partido por responsabilidad: una ruta de BD, pandas solo en los reportes, API pública igual."""
 import importlib
 import inspect
-import sqlite3
 from pathlib import Path
 
 import pytest
 
 from value_bot import db
 
-MODULES = ("connection", "schema", "picks", "parlays", "results", "reports")
+MODULES = ("connection", "schema", "picks", "parlays", "results", "reports", "backup")
 PUBLIC = ("init_db", "save_picks", "already_sent_for_game", "already_sent_for_event", "already_sent_bet",
           "save_parlays", "get_pending_parlays", "save_parlay_result", "save_result", "get_unresolved_picks",
           "get_parlay_summary", "get_roi_summary", "get_model_calibration", "get_calibration_factors",
@@ -52,5 +51,5 @@ def test_patching_the_connection_path_redirects_every_module(tmp_path, monkeypat
     db.save_picks("2026-11-03", [{"sport": "nfl", "home": "A", "away": "B", "type": "Victoria A"}])
     (pick,) = db.get_unresolved_picks(("nfl",))
     db.save_result(pick["id"], "win", "1-0", 1.0)
-    with sqlite3.connect(path) as conn:
+    with db.connection.connect(path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM results").fetchone() == (1,)

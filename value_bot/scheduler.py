@@ -5,7 +5,7 @@ Value Bot Pro — APScheduler daemon.
 Reemplaza el crontab con un proceso persistente que:
   - Corre el bot diariamente a las 9:00 AM
   - Corre el reporte semanal los lunes a las 9:05 AM
-  - Persiste el estado de los jobs en el mismo SQLite de picks
+  - Persiste el estado de los jobs en scheduler.db (aparte de los picks; fuera de git)
   - Recupera ejecuciones perdidas (misfire_grace_time=3600)
 
 Uso:
@@ -20,11 +20,14 @@ Para instalar como servicio launchd en Mac:
 """
 import asyncio
 import logging
+from pathlib import Path
 
 from value_bot.config import validate_env
-from value_bot.db.connection import DB_PATH
 
 log = logging.getLogger(__name__)
+
+# Estado de APScheduler: infraestructura, no datos (los jobs se recrean al arrancar)
+SCHEDULER_DB_PATH = Path(__file__).parent.parent / "scheduler.db"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,7 +48,7 @@ def _build_scheduler():
         ) from exc
 
     jobstores = {
-        "default": SQLAlchemyJobStore(url=f"sqlite:///{DB_PATH}")
+        "default": SQLAlchemyJobStore(url=f"sqlite:///{SCHEDULER_DB_PATH}")
     }
     scheduler = AsyncIOScheduler(
         jobstores=jobstores,

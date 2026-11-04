@@ -1,6 +1,7 @@
 import os
 import logging
 from datetime import datetime
+from pathlib import Path
 
 try:
     from dotenv import load_dotenv
@@ -33,6 +34,13 @@ ESPN_NBA_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/sco
 ESPN_NFL_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
 ESPN_NFL_SCHEDULE_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_id}/schedule"
 ESPN_NFL_TEAMS_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams"
+
+# ── Respaldo de picks_history.db ──────────────────────────────────
+# La BD no está en git: cada corrida deja una copia en iCloud Drive (si existe) y se guardan
+# las últimas DB_BACKUP_KEEP. DB_BACKUP_DIR en el entorno la redirige (los tests lo hacen).
+_ICLOUD_DRIVE = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
+DB_BACKUP_DIR = Path(os.getenv("DB_BACKUP_DIR") or _ICLOUD_DRIVE / "ValueBot")
+DB_BACKUP_KEEP = 14
 
 # ── Sports toggles ────────────────────────────────────────────────
 SPORTS_ENABLED = {

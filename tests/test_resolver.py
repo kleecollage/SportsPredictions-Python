@@ -1,5 +1,4 @@
 """Resolución de picks NBA/NFL contra marcadores finales de ESPN."""
-import sqlite3
 from datetime import datetime, timezone
 
 import pytest
@@ -137,7 +136,7 @@ def _nfl(pick_type, market, event_id="401", home="Los Angeles Rams", away="Buffa
 
 
 def _results():
-    with sqlite3.connect(db.connection.DB_PATH) as conn:
+    with db.connection.connect() as conn:
         return {pt: (o, s, p) for pt, o, s, p in conn.execute("""
             SELECT p.pick_type, r.outcome, r.actual_score, r.profit_units
             FROM results r JOIN picks p ON p.id = r.pick_id""")}

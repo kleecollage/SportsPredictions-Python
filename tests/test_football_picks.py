@@ -1,5 +1,4 @@
 """Fútbol: calibración de la BD por deporte, sin stats sin picks y dedup por partido y fecha."""
-import sqlite3
 
 import pytest
 
@@ -18,7 +17,7 @@ def _resolved(sport, run_date, n, wins, confidence=70):
               "confidence": confidence, "est_odds": 1.8, "our_prob": confidence / 100, "data_quality": "high"}
              for i in range(n)]
     db.save_picks(run_date, picks)
-    with sqlite3.connect(db.connection.DB_PATH) as conn:
+    with db.connection.connect() as conn:
         ids = [r[0] for r in conn.execute("SELECT id FROM picks WHERE sport=? AND run_date=? ORDER BY id",
                                           (sport, run_date))]
     for i, pick_id in enumerate(ids):

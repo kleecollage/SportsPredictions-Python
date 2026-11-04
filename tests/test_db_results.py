@@ -1,5 +1,4 @@
 """Tabla results: índice UNIQUE por pick_id (upsert) y lectura de picks sin resolver."""
-import sqlite3
 
 import pytest
 
@@ -20,7 +19,7 @@ def _pick(home="Detroit Pistons", away="Boston Celtics", pick_type="Under 211.1 
 
 
 def _results():
-    with sqlite3.connect(db.connection.DB_PATH) as conn:
+    with db.connection.connect() as conn:
         return conn.execute("SELECT pick_id, outcome, profit_units FROM results").fetchall()
 
 
@@ -37,7 +36,7 @@ def test_save_result_twice_updates_the_same_row(temp_db):
 def test_init_db_removes_duplicate_results_before_creating_unique_index(tmp_path, monkeypatch):
     path = tmp_path / "old.db"
     monkeypatch.setattr(db.connection, "DB_PATH", path)
-    with sqlite3.connect(path) as conn:  # esquema anterior, sin índice UNIQUE
+    with db.connection.connect(path) as conn:  # esquema anterior, sin índice UNIQUE
         conn.execute("CREATE TABLE results (id INTEGER PRIMARY KEY AUTOINCREMENT, "
                      "pick_id INTEGER NOT NULL, outcome TEXT, actual_score TEXT, "
                      "profit_units REAL, resolved_at TEXT, source TEXT)")

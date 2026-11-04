@@ -18,7 +18,8 @@ from value_bot.telegram_sender import build_message, build_weekly_report, send_t
 from value_bot.sports_registry import SPORTS_BY_KEY, active_sports, sport_keys
 from value_bot.run_context import RunContext
 from value_bot.db import (
-    get_model_calibration, get_parlay_summary, get_recent_picks, get_roi_summary, init_db, save_parlays, save_picks,
+    backup_db, get_model_calibration, get_parlay_summary, get_recent_picks, get_roi_summary, init_db, save_parlays,
+    save_picks,
 )
 from value_bot.resolver import resolve_parlays, resolve_pending_picks
 from value_bot.tools.league_picker import LeagueOption, pick_leagues, render_decisions
@@ -133,12 +134,20 @@ async def main(argv: list[str] | None = None) -> None:
 
     # Inicializar DB de historial y resolver juegos ya terminados (para el ROI del mensaje)
     init_db()
+    try:
+        await _send_picks(argv or [])
+    finally:
+        backup_db()   # la BD no está en git: también si el envío falla (los resultados ya se escribieron)
+
+
+async def _send_picks(argv: list[str]) -> None:
+    """Resultados, picks, mensaje y guardado de una corrida (main() respalda la BD al final)."""
     _resolve_results()
 
     ctx = RunContext()   # estado de esta corrida: nada viene de la anterior
     await _football_scrapers(ctx)
     picks = await _collect_picks(ctx)
-    picks = {**picks, "football": picks["football"] + _btts_picks(ctx, picks["football"], argv or [])}
+    picks = {**picks, "football": picks["football"] + _btts_picks(ctx, picks["football"], argv)}
 
     all_picks = [pick for sport in sport_keys() for pick in picks[sport]]
     parlays   = build_parlays(all_picks)
@@ -163,12 +172,16 @@ async def weekly_report():
     """Envía reporte semanal completo. Diseñado para correr cada lunes."""
     log.info("═══ Value Bot Pro — Reporte Semanal ═══")
     init_db()
-    _resolve_results()
-    roi    = _current_performance()
-    calib  = get_model_calibration(min_picks=5, **_current_scope())
-    recent = get_recent_picks(days=7, **_current_scope())
-    msg    = build_weekly_report(roi, calib, recent, parlays=get_parlay_summary(days=7, **_current_scope()))
-    await send_telegram(msg)
+    try:
+        _resolve_results()
+        roi    = _current_performance()
+        calib  = get_model_calibration(min_picks=5, **_current_scope())
+        recent = get_recent_picks(days=7, **_current_scope())
+        msg    = build_weekly_report(roi, calib, recent,
+                                     parlays=get_parlay_summary(days=7, **_current_scope()))
+        await send_telegram(msg)
+    finally:
+        backup_db()   # el reporte también resuelve resultados
     log.info("═══ ✓ Reporte semanal enviado ═══")
 
 

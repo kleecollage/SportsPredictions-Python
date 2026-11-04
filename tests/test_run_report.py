@@ -1,5 +1,4 @@
 """Corrida 31-oct-2026: mensaje sin picks, juegos NBA ya empezados y ventana de rendimiento."""
-import sqlite3
 from datetime import date, timedelta
 
 import pytest
@@ -85,7 +84,7 @@ def _resolved(run_date, outcome, profit, resolved_days_ago=0):
                               "data_quality": "high"}])
     pick_id = max(p["id"] for p in db.get_unresolved_picks(("nfl",)))
     db.save_result(pick_id, outcome, "1-0", profit)
-    with sqlite3.connect(db.connection.DB_PATH) as conn:
+    with db.connection.connect() as conn:
         conn.execute("UPDATE results SET resolved_at = datetime('now', ?) WHERE pick_id = ?",
                      (f"-{resolved_days_ago} days", pick_id))
 
