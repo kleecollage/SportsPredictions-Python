@@ -10,7 +10,6 @@ from telegram.constants import ParseMode
 from value_bot.config import BOT_TOKEN, CHAT_ID, VALUE_THRESHOLD
 from value_bot.analysis.pick import Pick
 from value_bot.sports_registry import SPORTS, SPORTS_BY_KEY
-from value_bot.store import store
 
 log = logging.getLogger(__name__)
 
@@ -83,7 +82,7 @@ def _group_picks_by_game(picks):
     return list(groups.values())
 
 
-def _game_block(group):
+def _game_block(group, nba_form: dict | None = None):
     gi     = group["game_info"]
     gpicks = group["picks"]
     lines  = []
@@ -102,8 +101,8 @@ def _game_block(group):
     if sport == "nba":
         h_rec = gi.get("home_record", "")
         a_rec = gi.get("away_record", "")
-        h_form_data = store.nba_team_form_cache.get(gi["home"], {})
-        a_form_data = store.nba_team_form_cache.get(gi["away"], {})
+        h_form_data = (nba_form or {}).get(gi["home"], {})
+        a_form_data = (nba_form or {}).get(gi["away"], {})
         if h_form_data or a_form_data:
             h_info = (f"{h_form_data.get('ppg','?')}pts "
                       f"{_form_emoji(h_form_data.get('form',''))}"
@@ -223,22 +222,25 @@ def _value_count(picks: list) -> int:
     return sum(1 for p in picks if p.get("value") and p["value"] >= VALUE_THRESHOLD)
 
 
-def _picks_section(header: str, picks: list, groups: list | None = None) -> list[str]:
+def _picks_section(header: str, picks: list, groups: list | None = None,
+                   nba_form: dict | None = None) -> list[str]:
     """Encabezado de sección + un bloque por partido."""
     lines = [SEP, header, SEP, ""]
     for group in groups if groups is not None else _group_picks_by_game(picks):
-        lines.extend(_game_block(group))
+        lines.extend(_game_block(group, nba_form))
     lines.append("")
     return lines
 
 
-def _nba_sections(np: list) -> list[str]:
+def _nba_sections(np: list, nba_form: dict | None = None) -> list[str]:
     finals  = [p for p in np if p.get("is_finals")]
     regular = [p for p in np if not p.get("is_finals")]
-    lines = _picks_section(f"🏆 <b>NBA FINALS {datetime.now().year}</b>", finals) if finals else []
+    lines = (_picks_section(f"🏆 <b>NBA FINALS {datetime.now().year}</b>", finals, nba_form=nba_form)
+             if finals else [])
     if regular:
         groups = _group_picks_by_game(regular)
-        lines += _picks_section(f"🏀 <b>NBA</b> ({_section_counts(groups, regular, 'juego')})", regular, groups)
+        lines += _picks_section(f"🏀 <b>NBA</b> ({_section_counts(groups, regular, 'juego')})", regular, groups,
+                                nba_form)
     return lines
 
 
@@ -253,7 +255,7 @@ def _registry_picks(picks_by_sport: dict[str, list[Pick]]) -> dict[str, list[Pic
     return {s.key: picks_by_sport[s.key] for s in SPORTS if picks_by_sport.get(s.key)}
 
 
-def _picks_blocks(picks_by_sport: dict[str, list[Pick]]) -> list[str]:
+def _picks_blocks(picks_by_sport: dict[str, list[Pick]], nba_form: dict | None = None) -> list[str]:
     """Una sección por deporte con picks, en el orden del registro (NBA separa las Finals)."""
     total = sum(len(picks) for picks in picks_by_sport.values())
     generated = "generado" if total == 1 else "generados"
@@ -261,7 +263,7 @@ def _picks_blocks(picks_by_sport: dict[str, list[Pick]]) -> list[str]:
     for key, picks in picks_by_sport.items():
         spec = SPORTS_BY_KEY[key]
         if key == "nba":
-            lines += _nba_sections(picks)
+            lines += _nba_sections(picks, nba_form)
         else:
             lines += _counted_section(f"{spec.emoji} <b>{spec.title}</b>", picks, spec.noun)
     return lines
@@ -300,14 +302,17 @@ def _upcoming_block(upcoming: list | None) -> list[str]:
 
 
 def build_message(picks_by_sport: dict[str, list[Pick]], parlays: list, upcoming: list | None = None,
-                  perf: dict | None = None, analyzed: dict | None = None) -> str:
-    """`picks_by_sport` = {clave del registro: picks}; deportes fuera del registro o vacíos no salen."""
+                  perf: dict | None = None, analyzed: dict | None = None, nba_form: dict | None = None) -> str:
+    """
+    `picks_by_sport` = {clave del registro: picks}; deportes fuera del registro o vacíos no salen.
+    `nba_form` = forma reciente por equipo NBA (ctx.nba.form) para la línea 📊 de esos juegos.
+    """
     lines = ["🏆 <b>VALUE BOT PRO v4.6</b>", _date_line(), SEP, ""]
     picks_by_sport = _registry_picks(picks_by_sport)
     if not picks_by_sport:
         lines += _no_picks_block(analyzed)
     else:
-        lines += _picks_blocks(picks_by_sport) + _parlays_block(parlays)
+        lines += _picks_blocks(picks_by_sport, nba_form) + _parlays_block(parlays)
     lines += _upcoming_block(upcoming)
 
     # Bloque de rendimiento (solo si hay datos resueltos)

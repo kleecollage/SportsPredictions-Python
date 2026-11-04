@@ -67,3 +67,51 @@ def test_context_fields_cannot_be_replaced():
         ctx.nfl = None
     with pytest.raises(dataclasses.FrozenInstanceError):
         ctx.nfl.team_ids = ["9"]
+
+
+# ── NBA ───────────────────────────────────────────────────────────
+
+def test_nba_state_starts_clean_in_each_run():
+    first = RunContext()
+    first.nba.api_down.set()
+    first.nba.form["Boston Celtics"] = {"form": "WWWWW"}
+    first.nba.slate_dates.append("2026-11-03")
+    second = RunContext()
+    assert not second.nba.api_down.is_set() and second.nba.form == {} and second.nba.slate_dates == []
+
+
+def test_nba_network_failure_only_stops_nba_api_for_that_run(monkeypatch):
+    import requests
+    from value_bot.sports import nba
+
+    def down(**_):
+        raise requests.exceptions.ConnectTimeout("stats.nba.com")
+    monkeypatch.setattr(nba, "NBA_API_OK", True)
+    monkeypatch.setattr(nba.time, "sleep", lambda _: None)
+    monkeypatch.setattr(nba.leaguedashteamstats, "LeagueDashTeamStats", down, raising=False)
+    run = RunContext()
+    assert nba.nba_get_league_stats(run, "2026-27", "Regular Season") == {}
+    assert run.nba.api_down.is_set()
+    assert not RunContext().nba.api_down.is_set()
+
+
+def test_upcoming_starts_after_the_slate_in_the_context(monkeypatch):
+    from value_bot import main
+    asked = []
+    monkeypatch.setattr("value_bot.sports_registry.SPORTS_ENABLED", {"nba": True})
+    monkeypatch.setattr(main, "get_upcoming_nba_events", lambda after=None: asked.append(after) or [])
+    ctx = RunContext()
+    ctx.nba.slate_dates.append("2026-11-03")
+    main._upcoming(ctx)
+    assert asked == ["2026-11-03"]
+
+
+def test_nba_form_from_the_context_reaches_the_message():
+    from value_bot import telegram_sender as ts
+    pick = {"sport": "nba", "league": "NBA", "home": "Boston Celtics", "away": "Chicago Bulls", "type": "Victoria Boston Celtics",
+            "confidence": 60, "est_odds": 1.9, "value": 0.05, "reasoning": "r", "data_quality": "high",
+            "real_odds_source": True}
+    form = {"Boston Celtics": {"ppg": 118.2, "form": "WWLWW"}, "Chicago Bulls": {"ppg": 104.5, "form": "LLWLL"}}
+    msg = ts.build_message({"nba": [pick]}, [], nba_form=form)
+    assert "Celtics: 118.2pts" in msg and "Bulls: 104.5pts" in msg
+    assert "118.2pts" not in ts.build_message({"nba": [pick]}, [])

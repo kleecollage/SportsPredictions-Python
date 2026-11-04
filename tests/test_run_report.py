@@ -9,7 +9,6 @@ from value_bot import telegram_sender as ts
 from value_bot.analysis import nba_picks
 from value_bot.scrapers import espn
 from value_bot.sports import nba
-from value_bot.store import store
 
 
 # ── Mensaje sin picks: distinguir "sin juegos" de "ningún pick con value" ─
@@ -30,14 +29,11 @@ def test_analyzed_count_uses_singular():
     assert "🏈 1 juego" in ts.build_message({}, [], analyzed={"nfl": 1})
 
 
-def test_nba_picks_records_how_many_games_were_analyzed(monkeypatch):
-    store.clear_run_caches()
-    monkeypatch.setattr(nba_picks, "get_nba_games", lambda: [{"home": "A", "away": "B", "lines": {"home_ml": 1.8}}] * 3)
-    monkeypatch.setattr(nba_picks, "analyze_nba_game", lambda g: [])
-    nba_picks.get_nba_picks()
-    assert store.games_analyzed == {"nba": 3}
-    store.clear_run_caches()
-    assert store.games_analyzed == {}
+def test_nba_picks_records_how_many_games_were_analyzed(monkeypatch, ctx):
+    monkeypatch.setattr(nba_picks, "get_nba_games", lambda ctx: [{"home": "A", "away": "B", "lines": {"home_ml": 1.8}}] * 3)
+    monkeypatch.setattr(nba_picks, "analyze_nba_game", lambda c, g: [])
+    nba_picks.get_nba_picks(ctx)
+    assert ctx.games_analyzed == {"nba": 3}
 
 
 # ── NBA: solo juegos que no han empezado ──────────────────────────

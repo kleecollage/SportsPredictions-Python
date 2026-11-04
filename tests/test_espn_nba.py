@@ -7,7 +7,6 @@ import pytest
 from value_bot import main
 from value_bot.scrapers import espn
 from value_bot.sports import nba
-from value_bot.store import store
 
 EVENT = {"id": "401", "date": "2026-11-02T00:00Z", "competitions": [{
     "status": {"type": {"name": "STATUS_SCHEDULED"}},
@@ -123,7 +122,6 @@ def scoreboard(monkeypatch):
         return by_day.get(date_str, [])
     monkeypatch.setattr(espn, "espn_nba_games", fake)
     monkeypatch.setattr(espn, "now_et", lambda: datetime(2026, 11, 1, 9, 0, tzinfo=espn.ESPN_TZ))
-    monkeypatch.setattr(store, "nba_slate_date", None)
     return asked
 
 
@@ -132,10 +130,9 @@ def test_upcoming_starts_the_day_after_today_in_eastern_time(scoreboard):
     assert scoreboard == ["2026-11-02"] and upcoming[0]["date"] == "2026-11-02"
 
 
-def test_upcoming_starts_after_the_day_the_picks_used(scoreboard, monkeypatch):
+def test_upcoming_starts_after_the_day_the_picks_used(scoreboard):
     # Hoy sin NBA → los picks salieron de mañana: los próximos no deben repetirlos
-    monkeypatch.setattr(store, "nba_slate_date", "2026-11-02")
-    upcoming = espn.get_upcoming_nba_events()
+    upcoming = espn.get_upcoming_nba_events(after="2026-11-02")
     assert scoreboard[0] == "2026-11-03" and upcoming[0]["date"] == "2026-11-03"
 
 
@@ -144,20 +141,14 @@ def test_upcoming_is_capped(scoreboard, monkeypatch):
     assert len(espn.get_upcoming_nba_events()) == espn.UPCOMING_MAX
 
 
-def test_clear_run_caches_resets_the_slate_date():
-    store.nba_slate_date = "2026-11-02"
-    store.clear_run_caches()
-    assert store.nba_slate_date is None
-
-
 # ── main: la sección de próximos nunca tumba el mensaje ───────────
 
-def test_upcoming_failure_does_not_stop_the_daily_message(monkeypatch, caplog):
-    def boom():
+def test_upcoming_failure_does_not_stop_the_daily_message(monkeypatch, caplog, ctx):
+    def boom(after=None):
         raise RuntimeError("ESPN raro")
     monkeypatch.setattr(main, "get_upcoming_nba_events", boom)
     monkeypatch.setattr("value_bot.sports_registry.SPORTS_ENABLED", {"nba": True})
-    assert main._upcoming() == []
+    assert main._upcoming(ctx) == []
     assert "Próximos partidos" in caplog.text
 
 
@@ -174,9 +165,8 @@ def test_one_unreadable_espn_event_does_not_drop_the_slate(monkeypatch):
     assert [g["home"] for g in games] == ["Charlotte Hornets"]
 
 
-def test_get_nba_games_records_the_slate_day(monkeypatch):
+def test_get_nba_games_records_the_slate_day(monkeypatch, ctx):
     monkeypatch.setattr(nba, "now_et", lambda: datetime(2026, 11, 1, 9, 0, tzinfo=espn.ESPN_TZ))
     monkeypatch.setattr(nba, "_api_sports_games", lambda d: [])
     monkeypatch.setattr(nba, "espn_nba_games", lambda d: [EVENT] if d == "2026-11-02" else [])
-    monkeypatch.setattr(store, "nba_slate_date", None)
-    assert nba.get_nba_games() and store.nba_slate_date == "2026-11-02"
+    assert nba.get_nba_games(ctx) and ctx.nba.slate_dates == ["2026-11-02"]

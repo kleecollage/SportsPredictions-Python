@@ -6,16 +6,8 @@ import requests
 
 from value_bot.analysis import nba_picks
 from value_bot.sports import nba
-from value_bot.store import store
 
 pytestmark = pytest.mark.skipif(not nba.NBA_API_OK, reason="nba_api no instalado")
-
-
-@pytest.fixture(autouse=True)
-def _clean_store():
-    store.clear_run_caches()
-    yield
-    store.clear_run_caches()
 
 
 # ── H1: api-sports con la misma validación que nba_api ────────────
@@ -55,14 +47,14 @@ def test_per_game_line_rejects_impossible_points_allowed():
 
 # ── M1: sin H2H; la forma (solo para mostrar) no corta nba_api ────
 
-def test_h2h_is_gone_and_best_stats_returns_three_values(monkeypatch):
+def test_h2h_is_gone_and_best_stats_returns_three_values(monkeypatch, ctx):
     assert not hasattr(nba, "nba_get_h2h_stats")
-    monkeypatch.setattr(nba, "nba_get_team_full_stats", lambda name: {})
-    monkeypatch.setattr(nba, "nba_get_team_form", lambda name: {})
-    assert nba.get_best_nba_stats({"home": "Atlanta Hawks", "away": "Boston Celtics"}) == ({}, {}, {})
+    monkeypatch.setattr(nba, "nba_get_team_full_stats", lambda c, name: {})
+    monkeypatch.setattr(nba, "nba_get_team_form", lambda c, name: {})
+    assert nba.get_best_nba_stats(ctx, {"home": "Atlanta Hawks", "away": "Boston Celtics"}) == ({}, {}, {})
 
 
-def test_form_timeout_does_not_cut_model_data(monkeypatch):
+def test_form_timeout_does_not_cut_model_data(monkeypatch, ctx):
     built = []
 
     class Log:
@@ -72,65 +64,59 @@ def test_form_timeout_does_not_cut_model_data(monkeypatch):
     monkeypatch.setattr(nba.teamgamelog, "TeamGameLog", Log)
     monkeypatch.setattr(nba.time, "sleep", lambda _: None)
 
-    assert nba.nba_get_team_form("Boston Celtics") == {}
-    assert store.nba_api_down is False and store.nba_form_down is True
-    assert nba.nba_get_team_form("Chicago Bulls") == {} and len(built) == 1
+    assert nba.nba_get_team_form(ctx, "Boston Celtics") == {}
+    assert not ctx.nba.api_down.is_set() and ctx.nba.form_down.is_set()
+    assert nba.nba_get_team_form(ctx, "Chicago Bulls") == {} and len(built) == 1
 
 
-def test_form_circuit_resets_each_run():
-    store.nba_form_down = True
-    store.clear_run_caches()
-    assert store.nba_form_down is False
-
-
-def test_best_stats_do_not_request_the_display_form(monkeypatch):
+def test_best_stats_do_not_request_the_display_form(monkeypatch, ctx):
     base = {"ppg": 115.0, "opp_ppg": 112.0, "source": "nba_api", "season": "2026-27"}
-    monkeypatch.setattr(nba, "nba_get_team_full_stats", lambda name: dict(base))
+    monkeypatch.setattr(nba, "nba_get_team_full_stats", lambda c, name: dict(base))
     monkeypatch.setattr(nba, "nba_get_home_away_splits", lambda *a, **k: {})
 
-    def boom(_):
+    def boom(*_):
         raise AssertionError("la forma no es dato del modelo")
     monkeypatch.setattr(nba, "nba_get_team_form", boom)
-    nba.get_best_nba_stats({"home": "Atlanta Hawks", "away": "Boston Celtics"})
+    nba.get_best_nba_stats(ctx, {"home": "Atlanta Hawks", "away": "Boston Celtics"})
 
 
-def test_form_is_fetched_only_for_games_with_picks(monkeypatch):
+def test_form_is_fetched_only_for_games_with_picks(monkeypatch, ctx):
     games = [{"home": f"H{i}", "away": f"A{i}", "event_id": f"e{i}", "lines": {"home_ml": 1.8}} for i in range(3)]
     asked = []
-    monkeypatch.setattr(nba_picks, "get_nba_games", lambda: games)
-    monkeypatch.setattr(nba_picks, "analyze_nba_game", lambda g: [{
+    monkeypatch.setattr(nba_picks, "get_nba_games", lambda ctx: games)
+    monkeypatch.setattr(nba_picks, "analyze_nba_game", lambda c, g: [{
         "market": "moneyline", "type": f"Victoria {g['home']}", "confidence": 64, "value": 0.05}]
         if g["home"] == "H1" else [])
     monkeypatch.setattr(nba_picks, "already_sent_bet", lambda *a, **k: False)
-    monkeypatch.setattr(nba_picks, "nba_get_team_form", lambda name: asked.append(name) or {})
-    picks = nba_picks.get_nba_picks()
+    monkeypatch.setattr(nba_picks, "nba_get_team_form", lambda c, name: asked.append(name) or {})
+    picks = nba_picks.get_nba_picks(ctx)
     assert [p["home"] for p in picks] == ["H1"] and asked == ["H1", "A1"]
 
 
-def test_full_stats_do_not_request_the_form(monkeypatch):
+def test_full_stats_do_not_request_the_form(monkeypatch, ctx):
     hawks = nba._nba_find_team_id("Atlanta Hawks")
     monkeypatch.setattr(nba, "_nba_stat_sources", lambda: [("2026-27", "Regular Season")])
     monkeypatch.setattr(nba, "nba_get_league_stats",
-                        lambda s, t: {hawks: {"ppg": 115.0, "opp_ppg": 112.0, "win_pct": 60.0, "gp": 8, "pm": 3.0}})
+                        lambda c, s, t: {hawks: {"ppg": 115.0, "opp_ppg": 112.0, "win_pct": 60.0, "gp": 8, "pm": 3.0}})
 
-    def boom(_):
+    def boom(*_):
         raise AssertionError("la forma no es dato del modelo")
     monkeypatch.setattr(nba, "nba_get_team_form", boom)
-    assert nba.nba_get_team_full_stats("Atlanta Hawks")["ppg"] == 115.0
+    assert nba.nba_get_team_full_stats(ctx, "Atlanta Hawks")["ppg"] == 115.0
 
 
 # ── L2: splits solo con ambos equipos de nba_api ──────────────────
 
-def test_no_splits_requested_when_one_team_comes_from_api_sports(monkeypatch):
+def test_no_splits_requested_when_one_team_comes_from_api_sports(monkeypatch, ctx):
     asked = []
     stats = {"Atlanta Hawks": {"ppg": 115.0, "opp_ppg": 112.0, "source": "nba_api", "season": "2026-27"},
              "Boston Celtics": {}}
-    monkeypatch.setattr(nba, "nba_get_team_full_stats", lambda name: dict(stats[name]))
+    monkeypatch.setattr(nba, "nba_get_team_full_stats", lambda c, name: dict(stats[name]))
     monkeypatch.setattr(nba, "get_nba_team_stats_apisports",
                         lambda tid: {"ppg": 112.0, "opp_ppg": 110.0, "played": 10, "source": "api-sports"})
     monkeypatch.setattr(nba, "nba_get_home_away_splits", lambda *a, **k: asked.append(a) or {})
-    monkeypatch.setattr(nba, "nba_get_team_form", lambda name: {})
-    _, away, splits = nba.get_best_nba_stats({"home": "Atlanta Hawks", "away": "Boston Celtics", "away_id": 2})
+    monkeypatch.setattr(nba, "nba_get_team_form", lambda c, name: {})
+    _, away, splits = nba.get_best_nba_stats(ctx, {"home": "Atlanta Hawks", "away": "Boston Celtics", "away_id": 2})
     assert away["source"] == "api-sports" and splits == {} and asked == []
 
 
@@ -149,23 +135,23 @@ def feeds(monkeypatch):
     return feed
 
 
-def test_without_espn_or_api_sports_there_are_no_games_and_it_says_why(feeds, caplog):
+def test_without_espn_or_api_sports_there_are_no_games_and_it_says_why(feeds, caplog, ctx):
     assert not hasattr(nba, "_bbc_games") and not hasattr(nba, "_flashscore_games")
     with caplog.at_level(logging.WARNING):
-        assert nba.get_nba_games() == []
+        assert nba.get_nba_games(ctx) == []
     assert "sin juegos" in caplog.text
 
 
-def test_api_sports_asks_eastern_dates_and_keeps_every_game(feeds):
+def test_api_sports_asks_eastern_dates_and_keeps_every_game(feeds, ctx):
     feeds["api"] = [{"teams": {"home": {"id": i + 1, "name": f"Home {i}"}, "away": {"id": 100 + i, "name": f"Away {i}"}},
                      "status": {"short": "NS"}, "date": "2026-11-01T23:00:00-04:00"} for i in range(12)]
-    assert len(nba.get_nba_games()) == 12
+    assert len(nba.get_nba_games(ctx)) == 12
     assert feeds["params"][0]["timezone"] == "America/New_York"
 
 
-def test_only_games_with_lines_count_as_analyzed(monkeypatch):
+def test_only_games_with_lines_count_as_analyzed(monkeypatch, ctx):
     games = [{"home": "A", "away": "B", "lines": {"home_ml": 1.8}}, {"home": "C", "away": "D", "lines": {}}]
-    monkeypatch.setattr(nba_picks, "get_nba_games", lambda: games)
-    monkeypatch.setattr(nba_picks, "analyze_nba_game", lambda g: [])
-    nba_picks.get_nba_picks()
-    assert store.games_analyzed == {"nba": 1}
+    monkeypatch.setattr(nba_picks, "get_nba_games", lambda ctx: games)
+    monkeypatch.setattr(nba_picks, "analyze_nba_game", lambda c, g: [])
+    nba_picks.get_nba_picks(ctx)
+    assert ctx.games_analyzed == {"nba": 1}

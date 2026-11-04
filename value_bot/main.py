@@ -47,9 +47,9 @@ def _from_store(get_picks: Callable[[], list[Pick]], sport: str) -> Callable[[Ru
     return run
 
 
-# Cada fuente recibe el RunContext de la corrida (fútbol y NBA todavía vía store)
+# Cada fuente recibe el RunContext de la corrida (fútbol todavía vía store)
 PICK_SOURCES = {"football": _from_store(get_football_picks, "football"),
-                "nba": _from_store(get_nba_picks, "nba"),
+                "nba": get_nba_picks,
                 "nfl": get_nfl_picks}
 BTTS_FLAG = "--btts"   # BTTS gasta créditos por partido: solo a mano, nunca desde el scheduler
 
@@ -82,12 +82,12 @@ def _btts_picks(football_picks: list[dict], argv: list[str]) -> list[dict]:
     return keep_valid(picks, "football")
 
 
-def _upcoming() -> list:
+def _upcoming(ctx: RunContext) -> list:
     """Sección informativa "Próximos partidos": si falla, el mensaje sale sin ella."""
     if "nba" not in active_sports():
         return []
     try:
-        return get_upcoming_nba_events()
+        return get_upcoming_nba_events(after=max(ctx.nba.slate_dates, default=None))
     except Exception:
         log.exception("Próximos partidos NBA fallaron → mensaje sin esa sección")
         return []
@@ -162,9 +162,10 @@ async def main(argv: list[str] | None = None) -> None:
 
     all_picks = [pick for sport in sport_keys() for pick in picks[sport]]
     parlays   = build_parlays(all_picks)
-    upcoming  = _upcoming()
+    upcoming  = _upcoming(ctx)
     perf      = _current_performance()
-    message   = build_message(picks, parlays, upcoming, perf=perf, analyzed=dict(ctx.games_analyzed))
+    message   = build_message(picks, parlays, upcoming, perf=perf, analyzed=dict(ctx.games_analyzed),
+                              nba_form=ctx.nba.form)
 
     await send_telegram(message)
 

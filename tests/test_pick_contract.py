@@ -61,7 +61,7 @@ def _assert_contract(picks):
         assert missing_fields(pick) == (), pick["type"]
 
 
-def test_nfl_picks_meet_the_contract(monkeypatch):
+def test_nfl_picks_meet_the_contract(monkeypatch, ctx):
     game = {"home": "Kansas City Chiefs", "away": "Las Vegas Raiders", "home_id": "12", "away_id": "13",
             "event_id": "evt-1", "kickoff": "2026-11-08T18:00Z",
             "lines": {"provider": "Draft Kings", "home_ml": 1.40, "away_ml": 3.10,
@@ -75,18 +75,18 @@ def test_nfl_picks_meet_the_contract(monkeypatch):
     _assert_contract(nfl_picks.get_nfl_picks(RunContext()))
 
 
-def test_nba_picks_meet_the_contract(monkeypatch):
+def test_nba_picks_meet_the_contract(monkeypatch, ctx):
     game = {"home": "Charlotte Hornets", "away": "Philadelphia 76ers", "event_id": "401",
             "kickoff": "2026-11-03T23:00Z",
             "lines": {"home_ml": 2.1, "away_ml": 1.769, "home_spread": 2.5, "home_spread_odds": 1.87,
                       "away_spread_odds": 1.952, "total": 211.5, "over_odds": 1.87, "under_odds": 1.952}}
     strong = {"ppg": 124, "opp_ppg": 104, "season": nba_picks.nba_api_season(), "played": 20}
     weak = {"ppg": 104, "opp_ppg": 124, "season": nba_picks.nba_api_season(), "played": 20}
-    monkeypatch.setattr(nba_picks, "get_nba_games", lambda: [game])
-    monkeypatch.setattr(nba_picks, "get_best_nba_stats", lambda g: (strong, weak, {}))
+    monkeypatch.setattr(nba_picks, "get_nba_games", lambda ctx: [game])
+    monkeypatch.setattr(nba_picks, "get_best_nba_stats", lambda ctx, g: (strong, weak, {}))
     monkeypatch.setattr(nba_picks, "already_sent_bet", lambda *a, **k: False)
-    monkeypatch.setattr(nba_picks, "nba_get_team_form", lambda name: {})
-    _assert_contract(nba_picks.get_nba_picks())
+    monkeypatch.setattr(nba_picks, "nba_get_team_form", lambda c, name: {})
+    _assert_contract(nba_picks.get_nba_picks(ctx))
 
 
 def test_football_picks_meet_the_contract(monkeypatch):

@@ -1,18 +1,10 @@
-"""Singleton DataStore — caches de los deportes que aún no pasaron a RunContext (NFL ya está allí)."""
+"""Singleton DataStore — caches de los deportes que aún no pasaron a RunContext (NFL y NBA ya están allí)."""
 
 
 class DataStore:
     def __init__(self):
         # Playwright Capa 4 (fútbol) — populado por run_playwright_scrapers()
         self.pw_football_fixtures: list = []
-
-        # NBA API caches
-        self.nba_league_cache: dict = {}
-        self.nba_team_form_cache: dict = {}
-        self.nba_splits_cache: dict = {}    # (team_name, location, season) → splits
-        self.nba_api_down: bool = False     # tras un fallo de red no se insiste en la corrida
-        self.nba_form_down: bool = False    # idem solo para la forma (dato de mensaje, no del modelo)
-        self.nba_slate_date: str | None = None  # día ET de los juegos NBA analizados (próximos = después)
 
         # The Odds API cache
         self.odds_cache: dict = {}
@@ -31,12 +23,6 @@ class DataStore:
 
     def clear_run_caches(self):
         """Limpiar al inicio de cada run para evitar datos stale entre ejecuciones."""
-        self.nba_league_cache.clear()
-        self.nba_team_form_cache.clear()
-        self.nba_splits_cache.clear()
-        self.nba_api_down = False
-        self.nba_form_down = False
-        self.nba_slate_date = None
         self.pw_football_fixtures = []
         self.games_analyzed = {}
         self.football_fixtures = []

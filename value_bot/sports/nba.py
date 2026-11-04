@@ -11,7 +11,7 @@ from value_bot.config import (
     DAYS_AHEAD, nba_season, nba_api_season,
 )
 from value_bot.http_client import api_sports_get
-from value_bot.store import store
+from value_bot.run_context import RunContext
 from value_bot.scrapers.espn import espn_nba_games, espn_parse_nba, now_et
 
 try:
@@ -86,14 +86,14 @@ def _team_key(name):
 
 # ── nba_api: disponibilidad y lectura de filas ────────────────────
 
-def _nba_api_available() -> bool:
-    return NBA_API_OK and not store.nba_api_down
+def _nba_api_available(ctx: RunContext) -> bool:
+    return NBA_API_OK and not ctx.nba.api_down.is_set()
 
 
-def _on_nba_api_error(exc: Exception, what: str) -> None:
+def _on_nba_api_error(ctx: RunContext, exc: Exception, what: str) -> None:
     """Un fallo de red corta nba_api para el resto de la corrida (cada intento esperaría el timeout)."""
     if isinstance(exc, requests.exceptions.RequestException):
-        store.nba_api_down = True
+        ctx.nba.api_down.set()
         log.warning("nba_api sin respuesta (%s): %s → se omite nba_api el resto de la corrida", what, exc)
     else:
         log.warning("nba_api %s: %s", what, exc)
@@ -122,12 +122,12 @@ def _per_game_line(row) -> dict | None:
     }
 
 
-def nba_get_league_stats(season, season_type):
+def nba_get_league_stats(ctx: RunContext, season, season_type):
     """LeagueDashTeamStats por juego, cacheado. → {team_id: {ppg, opp_ppg, win_pct, gp, pm}}"""
     cache_key = (season, season_type)
-    if cache_key in store.nba_league_cache:
-        return store.nba_league_cache[cache_key]
-    if not _nba_api_available():
+    if cache_key in ctx.nba.league:
+        return ctx.nba.league[cache_key]
+    if not _nba_api_available(ctx):
         return {}
     try:
         time.sleep(0.8)
@@ -138,8 +138,8 @@ def nba_get_league_stats(season, season_type):
             timeout=NBA_API_TIMEOUT,
         ).get_data_frames()[0]
     except Exception as exc:
-        _on_nba_api_error(exc, f"LeagueDash {season} {season_type}")
-        store.nba_league_cache[cache_key] = {}
+        _on_nba_api_error(ctx, exc, f"LeagueDash {season} {season_type}")
+        ctx.nba.league[cache_key] = {}
         return {}
     try:
         result = {int(row["TEAM_ID"]): line for _, row in df.iterrows()
@@ -148,7 +148,7 @@ def nba_get_league_stats(season, season_type):
         log.warning("nba_api LeagueDash %s %s: respuesta inesperada (%r) — se ignora",
                     season, season_type, exc)
         result = {}
-    store.nba_league_cache[cache_key] = result
+    ctx.nba.league[cache_key] = result
     log.info("nba_api %s %s stats: %d equipos", season, season_type, len(result))
     return result
 
@@ -168,25 +168,25 @@ def _form_from_log(df, season: str, stype: str) -> dict:
     }
 
 
-def _form_available() -> bool:
-    return _nba_api_available() and not store.nba_form_down
+def _form_available(ctx: RunContext) -> bool:
+    return _nba_api_available(ctx) and not ctx.nba.form_down.is_set()
 
 
-def nba_get_team_form(team_name):
+def nba_get_team_form(ctx: RunContext, team_name):
     """
     TeamGameLog — últimos juegos {form, ppg, ...}. Solo para mostrar en Telegram (el
     modelo no la usa; nba_picks la pide solo para los juegos con pick): un fallo de red
-    corta la forma (store.nba_form_down), no nba_api, para no dejar sin splits ni
+    corta la forma (ctx.nba.form_down), no nba_api, para no dejar sin splits ni
     LeagueDash al resto de los juegos.
     """
-    if team_name in store.nba_team_form_cache:
-        return store.nba_team_form_cache[team_name]
+    if team_name in ctx.nba.form:
+        return ctx.nba.form[team_name]
     tid = _nba_find_team_id(team_name)
     if NBA_API_OK and not tid:
         log.warning("nba_api: equipo no encontrado: '%s'", team_name)
-        store.nba_team_form_cache[team_name] = {}
+        ctx.nba.form[team_name] = {}
         return {}
-    if not _form_available():
+    if not _form_available(ctx):
         return {}
     for season, stype in _nba_stat_sources():
         try:
@@ -195,7 +195,7 @@ def nba_get_team_form(team_name):
                 team_id=tid, season=season, season_type_all_star=stype, timeout=NBA_API_TIMEOUT,
             ).get_data_frames()[0]
         except requests.exceptions.RequestException as exc:
-            store.nba_form_down = True
+            ctx.nba.form_down.set()
             log.warning("nba_api TeamGameLog sin respuesta (%s): %s → sin forma el resto de la corrida",
                         team_name, exc)
             return {}
@@ -209,13 +209,13 @@ def nba_get_team_form(team_name):
         except _PARSE_ERRORS as exc:
             log.warning("nba_api TeamGameLog %s: respuesta inesperada (%r) — se ignora", team_name, exc)
             continue
-        store.nba_team_form_cache[team_name] = res
+        ctx.nba.form[team_name] = res
         return res
-    store.nba_team_form_cache[team_name] = {}
+    ctx.nba.form[team_name] = {}
     return {}
 
 
-def nba_get_team_full_stats(team_name):
+def nba_get_team_full_stats(ctx: RunContext, team_name):
     """
     LeagueDash del propio equipo (prioridad de _nba_stat_sources). Sin LeagueDash → {}:
     no se inventan puntos recibidos.
@@ -224,7 +224,7 @@ def nba_get_team_full_stats(team_name):
     if tid is None:
         return {}
     found = next(((season, stats[tid]) for season, stype in _nba_stat_sources()
-                  if tid in (stats := nba_get_league_stats(season, stype))), None)
+                  if tid in (stats := nba_get_league_stats(ctx, season, stype))), None)
     if not found:
         return {}
     season, ls = found
@@ -278,26 +278,26 @@ def get_nba_team_stats_apisports(team_id):
     }
 
 
-def nba_get_home_away_splits(team_name: str, location: str, season: str | None = None) -> dict:
+def nba_get_home_away_splits(ctx: RunContext, team_name: str, location: str, season: str | None = None) -> dict:
     """
     TeamDashboardByGeneralSplits → stats por juego home/away de un equipo.
 
     location: "home" | "road"; season: solo esa temporada (la de las stats base del
     equipo), así no se piden splits de otra temporada que luego se descartan.
     Retorna {ppg, opp_ppg, win_pct, gp, source, season} para ese split, o {} si falla.
-    Cacheado en store.nba_splits_cache[(team_name, location, season)].
+    Cacheado en ctx.nba.splits[(team_name, location, season)].
     """
     cache_key = (team_name, location, season)
-    if cache_key in store.nba_splits_cache:
-        return store.nba_splits_cache[cache_key]
+    if cache_key in ctx.nba.splits:
+        return ctx.nba.splits[cache_key]
     tid = _nba_find_team_id(team_name)
-    if not (_nba_api_available() and tid):
+    if not (_nba_api_available(ctx) and tid):
         return {}
 
     row_label = "Home" if location == "home" else "Road"
     sources = [(s, t) for s, t in _nba_stat_sources() if season is None or s == season]
     for season, season_type in sources:
-        if not _nba_api_available():
+        if not _nba_api_available(ctx):
             break
         try:
             time.sleep(0.8)
@@ -310,7 +310,7 @@ def nba_get_home_away_splits(team_name: str, location: str, season: str | None =
             )
             loc_df = dash.get_data_frames()[1]  # index 1 = LocationTeamDashboard (Home / Road)
         except Exception as exc:
-            _on_nba_api_error(exc, f"splits {team_name} {location} {season_type}")
+            _on_nba_api_error(ctx, exc, f"splits {team_name} {location} {season_type}")
             continue
         try:
             rows = loc_df[loc_df["GROUP_VALUE"] == row_label] if not loc_df.empty else loc_df
@@ -328,16 +328,16 @@ def nba_get_home_away_splits(team_name: str, location: str, season: str | None =
             "source":  f"nba_api_splits_{season_type.replace(' ', '_').lower()}",
             "season":  season,
         }
-        store.nba_splits_cache[cache_key] = result
+        ctx.nba.splits[cache_key] = result
         log.info("Splits %s (%s, %s %s): ppg=%.1f opp=%.1f",
                  team_name, location, season, season_type, result["ppg"], result["opp_ppg"])
         return result
 
-    store.nba_splits_cache[cache_key] = {}
+    ctx.nba.splits[cache_key] = {}
     return {}
 
 
-def get_best_nba_stats(game):
+def get_best_nba_stats(ctx: RunContext, game):
     """
     (h_stats, a_stats, splits): nba_api → api-sports → {}.
     splits = {"home": {...}, "away": {...}} solo con ambos equipos de nba_api y de la
@@ -345,8 +345,8 @@ def get_best_nba_stats(game):
     anterior y no deben pisar datos actuales); si no, {}.
     La forma reciente no entra: es dato del mensaje (nba_picks la pide solo para los picks).
     """
-    h_stats = nba_get_team_full_stats(game["home"])
-    a_stats = nba_get_team_full_stats(game["away"])
+    h_stats = nba_get_team_full_stats(ctx, game["home"])
+    a_stats = nba_get_team_full_stats(ctx, game["away"])
     if not h_stats and game.get("home_id"):
         h_stats = get_nba_team_stats_apisports(game["home_id"])
     if not a_stats and game.get("away_id"):
@@ -354,8 +354,8 @@ def get_best_nba_stats(game):
 
     splits: dict = {}
     if all((stats or {}).get("source") == "nba_api" for stats in (h_stats, a_stats)):
-        h_split = nba_get_home_away_splits(game["home"], "home", season=h_stats["season"])
-        a_split = nba_get_home_away_splits(game["away"], "road", season=a_stats["season"])
+        h_split = nba_get_home_away_splits(ctx, game["home"], "home", season=h_stats["season"])
+        a_split = nba_get_home_away_splits(ctx, game["away"], "road", season=a_stats["season"])
         if (h_split and a_split and h_split.get("season") == h_stats["season"]
                 and a_split.get("season") == a_stats["season"]):
             splits = {"home": h_split, "away": a_split}
@@ -430,7 +430,7 @@ def _with_espn(games: list[dict], date_str: str) -> list[dict]:
     return result
 
 
-def get_nba_games() -> list[dict]:
+def get_nba_games(ctx: RunContext) -> list[dict]:
     """
     Juegos NBA del primer día (hoy … hoy + DAYS_AHEAD) con datos: api-sports + ESPN.
     Sin ESPN no hay líneas y sin líneas no hay picks, así que ya no se cae a BBC ni a
@@ -442,7 +442,7 @@ def get_nba_games() -> list[dict]:
         date_str = (today + timedelta(days=day_offset)).strftime("%Y-%m-%d")
         games = _with_espn(_api_sports_games(date_str), date_str)
         if games:
-            store.nba_slate_date = date_str
+            ctx.nba.slate_dates.append(date_str)
             break
     if not games:
         log.warning("NBA: ESPN y api-sports sin juegos programados en %d días", DAYS_AHEAD + 1)

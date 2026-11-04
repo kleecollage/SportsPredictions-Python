@@ -152,11 +152,11 @@ def test_espn_nba_event_carries_event_id_and_lines():
 
 # ── picks.py: sin líneas no se piden stats; dedup por evento ─────
 
-def test_game_without_lines_skips_stats_requests(monkeypatch):
+def test_game_without_lines_skips_stats_requests(monkeypatch, ctx):
     def boom(_):
         raise AssertionError("no debe pedir stats sin líneas")
     monkeypatch.setattr(nba_picks, "get_best_nba_stats", boom)
-    assert nba_picks.analyze_nba_game({**GAME, "lines": {}}) == []
+    assert nba_picks.analyze_nba_game(ctx, {**GAME, "lines": {}}) == []
 
 
 @pytest.fixture
@@ -171,30 +171,30 @@ def _sent(market, event_id="401"):
             "est_odds": 2.1, "our_prob": 0.5, "data_quality": "high"}
 
 
-def test_event_dedup_is_per_sport(temp_db):
+def test_event_dedup_is_per_sport(temp_db, ctx):
     db.save_picks("2026-10-31", [_sent("moneyline")])
     assert db.already_sent_for_event("401", "moneyline", sport="nba") is True
     assert db.already_sent_for_event("401", "moneyline") is False  # NFL por defecto
 
 
 def _patch_slate(monkeypatch, pick):
-    monkeypatch.setattr(nba_picks, "get_nba_games", lambda: [GAME])
-    monkeypatch.setattr(nba_picks, "get_best_nba_stats", lambda g: (_stats(1, 1), _stats(1, 1), {}))
+    monkeypatch.setattr(nba_picks, "get_nba_games", lambda ctx: [GAME])
+    monkeypatch.setattr(nba_picks, "get_best_nba_stats", lambda ctx, g: (_stats(1, 1), _stats(1, 1), {}))
     monkeypatch.setattr(nba_picks, "analyze_nba_market", lambda *a, **k: [pick])
-    monkeypatch.setattr(nba_picks, "nba_get_team_form", lambda name: {})  # sin red
+    monkeypatch.setattr(nba_picks, "nba_get_team_form", lambda c, name: {})  # sin red
 
 
-def test_side_bet_already_sent_blocks_the_other_side_market(temp_db, monkeypatch):
+def test_side_bet_already_sent_blocks_the_other_side_market(temp_db, monkeypatch, ctx):
     db.save_picks("2026-10-30", [_sent("spread")])
     _patch_slate(monkeypatch, {"market": "moneyline", "side": GAME["home"], "type": "Victoria Charlotte Hornets",
                                "confidence": 55, "value": 0.05, "est_odds": 2.1})
-    assert nba_picks.get_nba_picks() == []
+    assert nba_picks.get_nba_picks(ctx) == []
 
 
-def test_total_is_independent_of_side_bets(temp_db, monkeypatch):
+def test_total_is_independent_of_side_bets(temp_db, monkeypatch, ctx):
     db.save_picks("2026-10-30", [_sent("spread")])
     _patch_slate(monkeypatch, {"market": "total", "side": "Over", "type": "Over 211.5 Puntos",
                                "confidence": 55, "value": 0.05, "est_odds": 1.87})
-    picks = nba_picks.get_nba_picks()
+    picks = nba_picks.get_nba_picks(ctx)
     assert [p["type"] for p in picks] == ["Over 211.5 Puntos"]
     assert picks[0]["sport"] == "nba" and picks[0]["event_id"] == "401"

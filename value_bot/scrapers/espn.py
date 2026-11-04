@@ -6,7 +6,6 @@ from zoneinfo import ZoneInfo
 from value_bot.config import ESPN_NBA_URL
 from value_bot.http_client import http_get
 from value_bot.scrapers.espn_lines import first_obj, obj, parse_lines
-from value_bot.store import store
 
 
 log = logging.getLogger(__name__)
@@ -82,13 +81,12 @@ def espn_parse_nba(event: object) -> dict | None:
     }
 
 
-def get_upcoming_nba_events(days: int = UPCOMING_DAYS) -> list[dict]:
+def get_upcoming_nba_events(after: str | None = None, days: int = UPCOMING_DAYS) -> list[dict]:
     """
-    Próximos juegos NBA (primer día con juegos tras el del slate de picks, o tras hoy ET)
-    para la sección "Próximos partidos"; así no repite los juegos de los picks.
+    Próximos juegos NBA (primer día con juegos tras `after` — el día ET del slate de picks —
+    o tras hoy ET) para la sección "Próximos partidos"; así no repite los juegos de los picks.
     """
-    start = (datetime.strptime(store.nba_slate_date, "%Y-%m-%d").date() if store.nba_slate_date
-             else now_et().date())
+    start = datetime.strptime(after, "%Y-%m-%d").date() if after else now_et().date()
     upcoming = []
     for d in range(1, days + 1):
         ds = (start + timedelta(days=d)).isoformat()

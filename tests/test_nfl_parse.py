@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 
 import pytest
 
-from value_bot.run_context import RunContext
 from value_bot.sports import nfl
 from value_bot.sports.nfl import TeamScores, espn_query_dates, parse_espn_nfl_event, parse_team_scores
 
@@ -15,11 +14,6 @@ def _competitor(side, team_id, name, record="3-2"):
         "team": {"id": team_id, "displayName": name},
         "records": [{"summary": record}],
     }
-
-
-@pytest.fixture
-def ctx():
-    return RunContext()
 
 
 def _event(status="STATUS_SCHEDULED", odds=None, season_type=2):
