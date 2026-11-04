@@ -5,6 +5,7 @@ import pytest
 
 from value_bot.analysis import football_picks, nba_picks, nfl_picks
 from value_bot.analysis.pick import REQUIRED_FIELDS, keep_valid, missing_fields
+from value_bot.run_context import RunContext
 from value_bot.sports.nfl import TeamScores
 
 
@@ -67,11 +68,11 @@ def test_nfl_picks_meet_the_contract(monkeypatch):
                       "home_spread": -6.5, "home_spread_odds": 1.91, "away_spread_odds": 1.91,
                       "total": 44.5, "over_odds": 1.91, "under_odds": 1.91}}
     scores = {"12": [(30.0, 14.0)] * 6, "13": [(14.0, 30.0)] * 6}
-    monkeypatch.setattr(nfl_picks, "get_nfl_games", lambda: [game])
-    monkeypatch.setattr(nfl_picks, "get_league_average", lambda: 22.0)
-    monkeypatch.setattr(nfl_picks, "get_team_scores", lambda tid: TeamScores(scores[tid], current=True))
+    monkeypatch.setattr(nfl_picks, "get_nfl_games", lambda ctx: [game])
+    monkeypatch.setattr(nfl_picks, "get_league_average", lambda ctx: 22.0)
+    monkeypatch.setattr(nfl_picks, "get_team_scores", lambda ctx, tid: TeamScores(scores[tid], current=True))
     monkeypatch.setattr(nfl_picks, "already_sent_bet", lambda *a, **k: False)
-    _assert_contract(nfl_picks.get_nfl_picks())
+    _assert_contract(nfl_picks.get_nfl_picks(RunContext()))
 
 
 def test_nba_picks_meet_the_contract(monkeypatch):

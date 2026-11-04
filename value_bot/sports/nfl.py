@@ -11,7 +11,7 @@ from value_bot.config import (
 )
 from value_bot.http_client import http_get
 from value_bot.scrapers.espn_lines import obj as _obj, parse_lines as _parse_lines, to_float as _to_float
-from value_bot.store import store
+from value_bot.run_context import RunContext
 
 log = logging.getLogger(__name__)
 
@@ -159,12 +159,12 @@ def _parse_board(data, date_str: str) -> list[dict]:
     return games
 
 
-def get_nfl_games() -> list[dict]:
+def get_nfl_games(ctx: RunContext) -> list[dict]:
     """Juegos programados de hoy a hoy + DAYS_AHEAD (ESPN no acepta rangos en NFL)."""
     games = []
     for date_str in espn_query_dates(datetime.now(timezone.utc), DAYS_AHEAD):
         games.extend(_parse_board(http_get(ESPN_NFL_URL, params={"dates": date_str}), date_str))
-    games = league_games(games, set(get_team_ids()))
+    games = league_games(games, set(get_team_ids(ctx)))
     with_market = sum(1 for g in games if g["lines"])
     log.info("NFL games: %d (%d con líneas de mercado)", len(games), with_market)
     return games
@@ -179,23 +179,22 @@ def _fetch_scores(team_id: str, season: int) -> list[tuple[float, float]] | None
     return parse_team_scores(data, team_id)
 
 
-def get_team_scores(team_id: str) -> TeamScores:
+def get_team_scores(ctx: RunContext, team_id: str) -> TeamScores:
     """
     Marcadores de la temporada actual. Si aún no hay NFL_MIN_GAMES, se agregan
     los de la temporada anterior en `previous` (current=False) en vez de descartar
     los actuales.
-    Caché solo dentro de la corrida (store se limpia en cada run); los fallos de
-    red no se cachean para poder reintentar.
+    Caché en ctx.nfl (solo esta corrida); los fallos de red no se cachean para poder reintentar.
     """
-    if team_id in store.nfl_scores_cache:
-        return store.nfl_scores_cache[team_id]
+    if team_id in ctx.nfl.scores:
+        return ctx.nfl.scores[team_id]
     current = _fetch_scores(team_id, nfl_season())
     if current is None:
         log.warning("NFL team %s: no se pudo leer el calendario → media de liga", team_id)
         return TeamScores([], current=False)
     if len(current) >= NFL_MIN_GAMES:
         result = TeamScores(current, current=True)
-        store.nfl_scores_cache[team_id] = result
+        ctx.nfl.scores[team_id] = result
         return result
 
     previous_season = nfl_season(offset=-1)
@@ -207,7 +206,7 @@ def get_team_scores(team_id: str) -> TeamScores:
     log.info("NFL team %s: %d juegos en temporada actual → sumando %d juegos de %d",
              team_id, len(current), len(previous), previous_season)
     result = TeamScores(current, current=False, previous=tuple(previous))
-    store.nfl_scores_cache[team_id] = result
+    ctx.nfl.scores[team_id] = result
     return result
 
 
@@ -221,11 +220,11 @@ def fetch_team_ids() -> list[str]:
     return [str(team_id) for team_id in ids if team_id]
 
 
-def get_team_ids() -> list[str]:
-    """fetch_team_ids cacheado dentro de la corrida (no se cachea un fallo)."""
-    if not store.nfl_team_ids:
-        store.nfl_team_ids = fetch_team_ids()
-    return store.nfl_team_ids
+def get_team_ids(ctx: RunContext) -> list[str]:
+    """fetch_team_ids cacheado en ctx.nfl (no se cachea un fallo: [] se vuelve a pedir)."""
+    if not ctx.nfl.team_ids:
+        ctx.nfl.team_ids.extend(fetch_team_ids())
+    return ctx.nfl.team_ids
 
 
 def league_average(score_lists: list[list[tuple[float, float]]]) -> float:
@@ -236,17 +235,17 @@ def league_average(score_lists: list[list[tuple[float, float]]]) -> float:
     return sum(points) / len(points)
 
 
-def get_league_average() -> float:
+def get_league_average(ctx: RunContext) -> float:
     """
     Media de toda la liga (32 equipos), no solo de los que juegan hoy: un slate
     de equipos goleadores inflaría la media y bajaría todos los totales.
     Los calendarios se piden en paralelo (32–64 requests).
     """
-    team_ids = get_team_ids()
+    team_ids = get_team_ids(ctx)
     if not team_ids:
         log.warning("NFL: no se pudo leer la lista de equipos → media por defecto %.1f",
                     NFL_LEAGUE_AVG_DEFAULT)
         return NFL_LEAGUE_AVG_DEFAULT
     with ThreadPoolExecutor(max_workers=SCHEDULE_FETCH_WORKERS) as pool:
-        teams = list(pool.map(get_team_scores, team_ids))
+        teams = list(pool.map(lambda team_id: get_team_scores(ctx, team_id), team_ids))
     return league_average([t.scores + list(t.previous) for t in teams])

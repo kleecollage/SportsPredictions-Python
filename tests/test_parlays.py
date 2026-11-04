@@ -188,7 +188,7 @@ def test_main_saves_parlays_linked_to_the_saved_picks(temp_db, monkeypatch):
         return None
     legs = [_leg(i) for i in range(2)]
     monkeypatch.setattr("value_bot.sports_registry.SPORTS_ENABLED", {"football": False, "nba": True, "nfl": False})
-    monkeypatch.setattr(main, "PICK_SOURCES", {"football": list, "nba": lambda: legs, "nfl": list})
+    monkeypatch.setattr(main, "PICK_SOURCES", {"football": lambda ctx: [], "nba": lambda ctx: legs, "nfl": lambda ctx: []})
     monkeypatch.setattr(main, "resolve_pending_picks", lambda: 0)
     monkeypatch.setattr(main, "get_upcoming_nba_events", lambda: [])
     monkeypatch.setattr(main, "send_telegram", no_send)
@@ -245,7 +245,7 @@ def test_failing_to_save_parlays_does_not_break_the_run(temp_db, monkeypatch, ca
         raise sqlite3.OperationalError("database is locked")
     legs = [_leg(i) for i in range(2)]
     monkeypatch.setattr("value_bot.sports_registry.SPORTS_ENABLED", {"football": False, "nba": True, "nfl": False})
-    monkeypatch.setattr(main, "PICK_SOURCES", {"football": list, "nba": lambda: legs, "nfl": list})
+    monkeypatch.setattr(main, "PICK_SOURCES", {"football": lambda ctx: [], "nba": lambda ctx: legs, "nfl": lambda ctx: []})
     monkeypatch.setattr(main, "resolve_pending_picks", lambda: 0)
     monkeypatch.setattr(main, "get_upcoming_nba_events", lambda: [])
     monkeypatch.setattr(main, "send_telegram", no_send)

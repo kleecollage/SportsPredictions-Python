@@ -3,6 +3,7 @@ import pytest
 
 from value_bot import db
 from value_bot.analysis import nfl_picks
+from value_bot.run_context import RunContext
 from value_bot.sports.nfl import TeamScores
 from value_bot.telegram_sender import build_message
 
@@ -48,10 +49,10 @@ def wired(monkeypatch):
                       "home_rating": home_rating, "away_rating": away_rating})
         return picks_by_home[game["home"]]
 
-    monkeypatch.setattr(nfl_picks, "get_nfl_games", lambda: games)
-    monkeypatch.setattr(nfl_picks, "get_league_average", lambda: 23.0)
+    monkeypatch.setattr(nfl_picks, "get_nfl_games", lambda ctx: games)
+    monkeypatch.setattr(nfl_picks, "get_league_average", lambda ctx: 23.0)
     monkeypatch.setattr(nfl_picks, "get_team_scores",
-                        lambda tid: TeamScores([(24.0, 20.0)] * 6, current=tid != "6",
+                        lambda ctx, tid: TeamScores([(24.0, 20.0)] * 6, current=tid != "6",
                                                previous=((30.0, 10.0),) * 17 if tid == "6" else ()))
     monkeypatch.setattr(nfl_picks, "analyze_nfl_game", fake_analyze)
     monkeypatch.setattr(db, "already_sent_for_event", lambda *_, **__: False)
@@ -59,12 +60,12 @@ def wired(monkeypatch):
 
 
 def test_uses_league_average_of_all_teams_not_slate(wired):
-    nfl_picks.get_nfl_picks()
+    nfl_picks.get_nfl_picks(RunContext())
     assert {c["avg"] for c in wired} == {23.0}
 
 
 def test_marks_ratings_from_previous_season(wired):
-    nfl_picks.get_nfl_picks()
+    nfl_picks.get_nfl_picks(RunContext())
     gb = next(c for c in wired if c["home"] == "Green Bay Packers")
     assert gb["home_rating"]["current"] is True
     assert gb["away_rating"]["current"] is False
@@ -73,13 +74,13 @@ def test_marks_ratings_from_previous_season(wired):
 
 
 def test_tags_picks_with_sport_and_keeps_game_lines(wired):
-    picks = nfl_picks.get_nfl_picks()
+    picks = nfl_picks.get_nfl_picks(RunContext())
     assert all(p["sport"] == "nfl" and p["league"] == "NFL" and p["flag"] == "🏈" for p in picks)
     assert all(p["lines"] == LINES for p in picks)
 
 
 def test_value_picks_first_then_confidence(wired):
-    types = [p["type"] for p in nfl_picks.get_nfl_picks()]
+    types = [p["type"] for p in nfl_picks.get_nfl_picks(RunContext())]
     assert types == ["Under 53.5 Puntos", "Victoria Kansas City Chiefs", "Victoria Green Bay Packers"]
 
 
@@ -87,25 +88,25 @@ def test_skips_markets_already_sent_for_that_event(wired, monkeypatch):
     sent = {("evt-9", "moneyline")}
     monkeypatch.setattr(db, "already_sent_for_event",
                         lambda event_id, market, sport: (event_id, market) in sent)
-    types = [p["type"] for p in nfl_picks.get_nfl_picks()]
+    types = [p["type"] for p in nfl_picks.get_nfl_picks(RunContext())]
     assert "Victoria Green Bay Packers" not in types
     assert "Victoria Kansas City Chiefs" in types and "Under 53.5 Puntos" in types
 
 
 def test_caps_number_of_picks(wired, monkeypatch):
     monkeypatch.setattr(nfl_picks, "MAX_PICKS_SPORT", 1)
-    assert len(nfl_picks.get_nfl_picks()) == 1
+    assert len(nfl_picks.get_nfl_picks(RunContext())) == 1
 
 
 def test_no_games_returns_empty_without_fetching_stats(monkeypatch):
-    monkeypatch.setattr(nfl_picks, "get_nfl_games", lambda: [])
+    monkeypatch.setattr(nfl_picks, "get_nfl_games", lambda ctx: [])
     monkeypatch.setattr(nfl_picks, "get_league_average",
-                        lambda: pytest.fail("no debe pedir la media sin juegos"))
-    assert nfl_picks.get_nfl_picks() == []
+                        lambda ctx: pytest.fail("no debe pedir la media sin juegos"))
+    assert nfl_picks.get_nfl_picks(RunContext()) == []
 
 
 def test_message_renders_nfl_section(wired):
-    picks = nfl_picks.get_nfl_picks()
+    picks = nfl_picks.get_nfl_picks(RunContext())
     msg = build_message({"nfl": picks}, [])
     assert "🏈 <b>NFL</b> (2 juegos  ·  3 picks  ·  1 💎 value)" in msg
     assert "Líneas: Draft Kings" in msg
@@ -118,7 +119,7 @@ def test_skips_side_bet_when_any_side_bet_was_already_sent_for_that_event(wired,
     sent = {("evt-12", "spread")}
     monkeypatch.setattr(db, "already_sent_for_event",
                         lambda event_id, market, sport: (event_id, market) in sent)
-    types = [p["type"] for p in nfl_picks.get_nfl_picks()]
+    types = [p["type"] for p in nfl_picks.get_nfl_picks(RunContext())]
     assert "Victoria Kansas City Chiefs" not in types
     assert "Victoria Green Bay Packers" in types
 
@@ -127,30 +128,30 @@ def test_totals_are_not_blocked_by_side_bets(wired, monkeypatch):
     sent = {("evt-9", "moneyline"), ("evt-9", "spread")}
     monkeypatch.setattr(db, "already_sent_for_event",
                         lambda event_id, market, sport: (event_id, market) in sent)
-    assert "Under 53.5 Puntos" in [p["type"] for p in nfl_picks.get_nfl_picks()]
+    assert "Under 53.5 Puntos" in [p["type"] for p in nfl_picks.get_nfl_picks(RunContext())]
 
 
 def test_skips_games_in_first_regular_season_weeks(wired, monkeypatch):
     week1 = {**_game("Kansas City Chiefs", "Las Vegas Raiders", "12", "13"), "week": 1, "season_type": 2}
     week3 = {**_game("Green Bay Packers", "Dallas Cowboys", "9", "6"), "week": 3, "season_type": 2}
-    monkeypatch.setattr(nfl_picks, "get_nfl_games", lambda: [week1, week3])
-    nfl_picks.get_nfl_picks()
+    monkeypatch.setattr(nfl_picks, "get_nfl_games", lambda ctx: [week1, week3])
+    nfl_picks.get_nfl_picks(RunContext())
     assert [c["home"] for c in wired] == ["Green Bay Packers"]
 
 
 def test_early_season_only_slate_does_not_fetch_stats(monkeypatch):
     week2 = {**_game("Kansas City Chiefs", "Las Vegas Raiders", "12", "13"), "week": 2, "season_type": 2}
-    monkeypatch.setattr(nfl_picks, "get_nfl_games", lambda: [week2])
+    monkeypatch.setattr(nfl_picks, "get_nfl_games", lambda ctx: [week2])
     monkeypatch.setattr(nfl_picks, "get_league_average",
-                        lambda: pytest.fail("no debe pedir la media sin juegos elegibles"))
-    assert nfl_picks.get_nfl_picks() == []
+                        lambda ctx: pytest.fail("no debe pedir la media sin juegos elegibles"))
+    assert nfl_picks.get_nfl_picks(RunContext()) == []
 
 
 # ── Sin datos de un equipo no hay pick (review nfl.py M1) ─────────
 
 @pytest.mark.parametrize("empty_id", ["13", None])
 def test_game_with_a_team_without_any_scores_produces_no_picks(wired, monkeypatch, empty_id):
-    def scores(tid):
+    def scores(ctx, tid):
         if tid == "13":
             return TeamScores([], current=False)          # calendario no se pudo leer
         return TeamScores([(24.0, 20.0)] * 6, current=True)
@@ -159,15 +160,15 @@ def test_game_with_a_team_without_any_scores_produces_no_picks(wired, monkeypatc
              _game("Green Bay Packers", "Dallas Cowboys", "9", "6")]
     if empty_id is None:
         games[0]["away_id"] = None
-    monkeypatch.setattr(nfl_picks, "get_nfl_games", lambda: games)
+    monkeypatch.setattr(nfl_picks, "get_nfl_games", lambda ctx: games)
 
-    picks = nfl_picks.get_nfl_picks()
+    picks = nfl_picks.get_nfl_picks(RunContext())
     assert [c["home"] for c in wired] == ["Green Bay Packers"]
     assert all(p["home"] != "Kansas City Chiefs" for p in picks)
 
 
 def test_team_with_only_previous_season_scores_still_counts(wired, monkeypatch):
     monkeypatch.setattr(nfl_picks, "get_team_scores",
-                        lambda tid: TeamScores([], current=False, previous=((24.0, 20.0),) * 17))
-    nfl_picks.get_nfl_picks()
+                        lambda ctx, tid: TeamScores([], current=False, previous=((24.0, 20.0),) * 17))
+    nfl_picks.get_nfl_picks(RunContext())
     assert len(wired) == 2

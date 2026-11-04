@@ -2,6 +2,7 @@
 import asyncio
 
 from value_bot import main
+from value_bot.run_context import RunContext
 
 NFL_PICK = {"sport": "nfl", "league": "NFL", "home": "H", "away": "A", "type": "Victoria H",
             "confidence": 56, "est_odds": 1.9, "our_prob": 0.56, "value": 0.05, "reasoning": "r",
@@ -9,21 +10,21 @@ NFL_PICK = {"sport": "nfl", "league": "NFL", "home": "H", "away": "A", "type": "
 
 
 def test_failing_sport_returns_empty_and_others_still_run(monkeypatch):
-    def boom():
+    def boom(ctx):
         raise KeyError("TEAM_ID")
 
     monkeypatch.setattr("value_bot.sports_registry.SPORTS_ENABLED", {"football": False, "nba": True, "nfl": True})
     monkeypatch.setattr(main, "PICK_SOURCES",
-                        {"football": lambda: ["no debe correr"], "nba": boom, "nfl": lambda: [NFL_PICK]})
-    picks = asyncio.run(main._collect_picks())
+                        {"football": lambda ctx: ["no debe correr"], "nba": boom, "nfl": lambda ctx: [NFL_PICK]})
+    picks = asyncio.run(main._collect_picks(RunContext()))
     assert picks == {"football": [], "nba": [], "nfl": [NFL_PICK]}
 
 
 def test_picks_breaking_the_contract_are_dropped(monkeypatch):
     broken = {k: v for k, v in NFL_PICK.items() if k != "reasoning"}
     monkeypatch.setattr("value_bot.sports_registry.SPORTS_ENABLED", {"football": False, "nba": False, "nfl": True})
-    monkeypatch.setattr(main, "PICK_SOURCES", {**main.PICK_SOURCES, "nfl": lambda: [NFL_PICK, broken]})
-    assert asyncio.run(main._collect_picks())["nfl"] == [NFL_PICK]
+    monkeypatch.setattr(main, "PICK_SOURCES", {**main.PICK_SOURCES, "nfl": lambda ctx: [NFL_PICK, broken]})
+    assert asyncio.run(main._collect_picks(RunContext()))["nfl"] == [NFL_PICK]
 
 
 def _flashscore_runs(monkeypatch, football_on, flashscore_on):

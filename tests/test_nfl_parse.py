@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from value_bot.run_context import RunContext
 from value_bot.sports import nfl
 from value_bot.sports.nfl import TeamScores, espn_query_dates, parse_espn_nfl_event, parse_team_scores
 
@@ -16,11 +17,9 @@ def _competitor(side, team_id, name, record="3-2"):
     }
 
 
-@pytest.fixture(autouse=True)
-def _clean_store():
-    nfl.store.clear_run_caches()
-    yield
-    nfl.store.clear_run_caches()
+@pytest.fixture
+def ctx():
+    return RunContext()
 
 
 def _event(status="STATUS_SCHEDULED", odds=None, season_type=2):
@@ -108,45 +107,44 @@ def test_parse_pick_em_spread_as_zero():
 
 
 def _patch_fetch(monkeypatch, by_season):
-    nfl.store.nfl_scores_cache.clear()
     monkeypatch.setattr(nfl, "nfl_season", lambda offset=0: 2026 + offset)
     monkeypatch.setattr(nfl, "_fetch_scores", lambda team_id, season: by_season[season])
 
 
-def test_get_team_scores_uses_current_season_with_enough_sample(monkeypatch):
+def test_get_team_scores_uses_current_season_with_enough_sample(monkeypatch, ctx):
     _patch_fetch(monkeypatch, {2026: [(20.0, 17.0)] * 3, 2025: [(24.0, 21.0)] * 17})
-    assert nfl.get_team_scores("12") == TeamScores([(20.0, 17.0)] * 3, current=True)
+    assert nfl.get_team_scores(ctx, "12") == TeamScores([(20.0, 17.0)] * 3, current=True)
 
 
-def test_get_team_scores_combines_seasons_without_sample(monkeypatch):
+def test_get_team_scores_combines_seasons_without_sample(monkeypatch, ctx):
     _patch_fetch(monkeypatch, {2026: [(20.0, 17.0)], 2025: [(24.0, 21.0)] * 17})
-    result = nfl.get_team_scores("12")
+    result = nfl.get_team_scores(ctx, "12")
     assert result.current is False
     assert result.scores == [(20.0, 17.0)]
     assert result.previous == ((24.0, 21.0),) * 17
 
 
-def test_get_team_scores_does_not_fall_back_on_network_failure(monkeypatch):
+def test_get_team_scores_does_not_fall_back_on_network_failure(monkeypatch, ctx):
     _patch_fetch(monkeypatch, {2026: None, 2025: [(24.0, 21.0)] * 17})
-    assert nfl.get_team_scores("12") == TeamScores([], current=False)
+    assert nfl.get_team_scores(ctx, "12") == TeamScores([], current=False)
 
 
 # ── Media de liga con los 32 equipos (#2) ─────────────────────────
 
-def test_get_league_average_uses_every_team(monkeypatch):
+def test_get_league_average_uses_every_team(monkeypatch, ctx):
     monkeypatch.setattr(nfl, "fetch_team_ids", lambda: ["1", "2", "3"])
     by_team = {
         "1": TeamScores([(30.0, 10.0)] * 4, True),
         "2": TeamScores([(20.0, 20.0)] * 4, True),
         "3": TeamScores([(10.0, 30.0)] * 4, True),
     }
-    monkeypatch.setattr(nfl, "get_team_scores", lambda tid: by_team[tid])
-    assert nfl.get_league_average() == pytest.approx(20.0)
+    monkeypatch.setattr(nfl, "get_team_scores", lambda c, tid: by_team[tid])
+    assert nfl.get_league_average(ctx) == pytest.approx(20.0)
 
 
-def test_get_league_average_falls_back_to_default_when_teams_unavailable(monkeypatch):
+def test_get_league_average_falls_back_to_default_when_teams_unavailable(monkeypatch, ctx):
     monkeypatch.setattr(nfl, "fetch_team_ids", lambda: [])
-    assert nfl.get_league_average() == nfl.NFL_LEAGUE_AVG_DEFAULT
+    assert nfl.get_league_average(ctx) == nfl.NFL_LEAGUE_AVG_DEFAULT
 
 
 # ── Fechas ESPN en hora del este (#8) ─────────────────────────────
@@ -213,31 +211,31 @@ def test_parse_null_status_is_not_scheduled():
     assert parse_espn_nfl_event(event) is None
 
 
-def test_get_nfl_games_skips_malformed_event_and_keeps_the_rest(monkeypatch):
+def test_get_nfl_games_skips_malformed_event_and_keeps_the_rest(monkeypatch, ctx):
     broken = _event()
     broken["competitions"][0]["competitors"] = "garbage"
     boards = iter([{"events": [broken, _event()]}])
     monkeypatch.setattr(nfl, "http_get", lambda url, params=None: next(boards, {}))
     monkeypatch.setattr(nfl, "fetch_team_ids", lambda: ["9", "6"])
-    games = nfl.get_nfl_games()
+    games = nfl.get_nfl_games(ctx)
     assert [g["event_id"] for g in games] == ["401772945"]
 
 
 # ── Temporada anterior fallida no se cachea (review #3 y #4) ──────
 
-def test_get_team_scores_does_not_cache_when_previous_season_fails(monkeypatch, caplog):
+def test_get_team_scores_does_not_cache_when_previous_season_fails(monkeypatch, caplog, ctx):
     _patch_fetch(monkeypatch, {2026: [(20.0, 17.0)], 2025: None})
     with caplog.at_level(logging.WARNING, logger=nfl.log.name):
-        result = nfl.get_team_scores("12")
+        result = nfl.get_team_scores(ctx, "12")
     assert result == TeamScores([(20.0, 17.0)], current=False)
-    assert "12" not in nfl.store.nfl_scores_cache
+    assert "12" not in ctx.nfl.scores
     assert "2025" in caplog.text
 
 
-def test_get_team_scores_logs_games_added_not_season_year(monkeypatch, caplog):
+def test_get_team_scores_logs_games_added_not_season_year(monkeypatch, caplog, ctx):
     _patch_fetch(monkeypatch, {2026: [(20.0, 17.0)], 2025: [(24.0, 21.0)] * 17})
     with caplog.at_level(logging.INFO, logger=nfl.log.name):
-        nfl.get_team_scores("12")
+        nfl.get_team_scores(ctx, "12")
     assert "sumando 17 juegos de 2025" in caplog.text
 
 
@@ -291,23 +289,23 @@ def test_parse_date_is_eastern_day_for_night_games():
 
 # ── Media de liga en paralelo (review #8) ─────────────────────────
 
-def test_get_league_average_fetches_teams_concurrently(monkeypatch):
+def test_get_league_average_fetches_teams_concurrently(monkeypatch, ctx):
     monkeypatch.setattr(nfl, "fetch_team_ids", lambda: ["1", "2"])
     barrier = threading.Barrier(2, timeout=2)
 
-    def scores(tid):
+    def scores(c, tid):
         barrier.wait()  # en serie nunca llegan dos hilos → BrokenBarrierError
         return TeamScores([(21.0, 21.0)] * 6, True)
 
     monkeypatch.setattr(nfl, "get_team_scores", scores)
-    assert nfl.get_league_average() == pytest.approx(21.0)
+    assert nfl.get_league_average(ctx) == pytest.approx(21.0)
 
 
-def test_team_ids_are_fetched_once_per_run(monkeypatch):
+def test_team_ids_are_fetched_once_per_run(monkeypatch, ctx):
     calls = []
     monkeypatch.setattr(nfl, "fetch_team_ids", lambda: calls.append(1) or ["9", "6"])
-    assert nfl.get_team_ids() == ["9", "6"]
-    assert nfl.get_team_ids() == ["9", "6"]
+    assert nfl.get_team_ids(ctx) == ["9", "6"]
+    assert nfl.get_team_ids(ctx) == ["9", "6"]
     assert len(calls) == 1
 
 
@@ -320,11 +318,11 @@ def test_parse_neutral_site_flag():
     assert parse_espn_nfl_event(event)["neutral_site"] is True
 
 
-def test_get_league_average_includes_previous_season_sample(monkeypatch):
+def test_get_league_average_includes_previous_season_sample(monkeypatch, ctx):
     monkeypatch.setattr(nfl, "fetch_team_ids", lambda: ["1"])
     monkeypatch.setattr(nfl, "get_team_scores",
-                        lambda tid: TeamScores([(30.0, 10.0)], False, ((20.0, 20.0),) * 9))
-    assert nfl.get_league_average() == pytest.approx(21.0)
+                        lambda c, tid: TeamScores([(30.0, 10.0)], False, ((20.0, 20.0),) * 9))
+    assert nfl.get_league_average(ctx) == pytest.approx(21.0)
 
 
 def test_parse_week_and_season_type():
@@ -339,19 +337,19 @@ def test_parse_without_week_leaves_it_unknown():
 
 # ── Review nfl.py L2 / L3 ─────────────────────────────────────────
 
-def test_failed_scoreboard_is_logged_not_taken_as_an_empty_day(monkeypatch, caplog):
+def test_failed_scoreboard_is_logged_not_taken_as_an_empty_day(monkeypatch, caplog, ctx):
     monkeypatch.setattr(nfl, "http_get", lambda url, params=None: {})
     monkeypatch.setattr(nfl, "fetch_team_ids", lambda: ["9", "6"])
     with caplog.at_level(logging.WARNING):
-        assert nfl.get_nfl_games() == []
+        assert nfl.get_nfl_games(ctx) == []
     assert "scoreboard sin respuesta" in caplog.text
 
 
-def test_day_without_games_is_not_a_failure(monkeypatch, caplog):
+def test_day_without_games_is_not_a_failure(monkeypatch, caplog, ctx):
     monkeypatch.setattr(nfl, "http_get", lambda url, params=None: {"events": []})
     monkeypatch.setattr(nfl, "fetch_team_ids", lambda: ["9", "6"])
     with caplog.at_level(logging.WARNING):
-        assert nfl.get_nfl_games() == []
+        assert nfl.get_nfl_games(ctx) == []
     assert "scoreboard sin respuesta" not in caplog.text
 
 
@@ -369,9 +367,9 @@ def test_team_ids_tolerate_malformed_payload(monkeypatch):
 
 
 @pytest.mark.parametrize("body", [None, "no events here", ["events"], 42])
-def test_scoreboard_that_is_not_an_object_counts_as_failed(monkeypatch, caplog, body):
+def test_scoreboard_that_is_not_an_object_counts_as_failed(monkeypatch, caplog, body, ctx):
     monkeypatch.setattr(nfl, "http_get", lambda url, params=None: body)
     monkeypatch.setattr(nfl, "fetch_team_ids", lambda: ["9", "6"])
     with caplog.at_level(logging.WARNING):
-        assert nfl.get_nfl_games() == []
+        assert nfl.get_nfl_games(ctx) == []
     assert "scoreboard sin respuesta" in caplog.text

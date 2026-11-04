@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import sys
+from collections.abc import Callable
 from datetime import datetime
 
 from value_bot.config import FLASHSCORE_ENABLED, MODEL_SINCE, validate_env
@@ -12,10 +13,11 @@ from value_bot.analysis.football_picks import get_btts_picks, get_football_picks
 from value_bot.analysis.nba_picks import get_nba_picks
 from value_bot.analysis.nfl_picks import get_nfl_picks
 from value_bot.analysis.parlays import build_parlays
-from value_bot.analysis.pick import keep_valid
+from value_bot.analysis.pick import Pick, keep_valid
 from value_bot.scrapers.espn import get_upcoming_nba_events
 from value_bot.telegram_sender import build_message, build_weekly_report, send_telegram
 from value_bot.sports_registry import SPORTS_BY_KEY, active_sports, sport_keys
+from value_bot.run_context import RunContext
 from value_bot.store import store
 from value_bot.db import (
     get_model_calibration, get_parlay_summary, get_recent_picks, get_roi_summary, init_db, save_parlays, save_picks,
@@ -31,14 +33,31 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 
-PICK_SOURCES = {"football": get_football_picks, "nba": get_nba_picks, "nfl": get_nfl_picks}
+def _from_store(get_picks: Callable[[], list[Pick]], sport: str) -> Callable[[RunContext], list[Pick]]:
+    """
+    Deportes que aún usan `store`: se corren igual y su conteo se copia al contexto, también
+    si fallan (como NFL, que escribe ctx.games_analyzed antes de poder fallar).
+    """
+    def run(ctx: RunContext) -> list[Pick]:
+        try:
+            return get_picks()
+        finally:
+            if sport in store.games_analyzed:
+                ctx.games_analyzed[sport] = store.games_analyzed[sport]
+    return run
+
+
+# Cada fuente recibe el RunContext de la corrida (fútbol y NBA todavía vía store)
+PICK_SOURCES = {"football": _from_store(get_football_picks, "football"),
+                "nba": _from_store(get_nba_picks, "nba"),
+                "nfl": get_nfl_picks}
 BTTS_FLAG = "--btts"   # BTTS gasta créditos por partido: solo a mano, nunca desde el scheduler
 
 
-def _safe_picks(sport: str) -> list:
+def _safe_picks(sport: str, ctx: RunContext) -> list[Pick]:
     """Picks de un deporte que cumplen el contrato; si revienta se loguea y se envían los demás."""
     try:
-        return keep_valid(PICK_SOURCES[sport](), sport)
+        return keep_valid(PICK_SOURCES[sport](ctx), sport)
     except Exception:
         log.exception("Picks %s fallaron → se envía el mensaje sin ese deporte", sport)
         return []
@@ -74,11 +93,11 @@ def _upcoming() -> list:
         return []
 
 
-async def _collect_picks() -> dict[str, list]:
+async def _collect_picks(ctx: RunContext) -> dict[str, list[Pick]]:
     """Picks de los deportes activos en paralelo; {deporte: [...]} con [] para los apagados."""
     loop = asyncio.get_running_loop()
     active = active_sports()
-    results = await asyncio.gather(*(loop.run_in_executor(None, _safe_picks, s) for s in active))
+    results = await asyncio.gather(*(loop.run_in_executor(None, _safe_picks, s, ctx) for s in active))
     return {sport: [] for sport in sport_keys()} | dict(zip(active, results))
 
 
@@ -137,14 +156,15 @@ async def main(argv: list[str] | None = None) -> None:
 
     await _football_scrapers()
 
-    picks = await _collect_picks()
+    ctx = RunContext()
+    picks = await _collect_picks(ctx)
     picks = {**picks, "football": picks["football"] + _btts_picks(picks["football"], argv or [])}
 
     all_picks = [pick for sport in sport_keys() for pick in picks[sport]]
     parlays   = build_parlays(all_picks)
     upcoming  = _upcoming()
     perf      = _current_performance()
-    message   = build_message(picks, parlays, upcoming, perf=perf, analyzed=dict(store.games_analyzed))
+    message   = build_message(picks, parlays, upcoming, perf=perf, analyzed=dict(ctx.games_analyzed))
 
     await send_telegram(message)
 

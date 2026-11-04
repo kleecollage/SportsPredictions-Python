@@ -8,7 +8,7 @@ from value_bot.config import MAX_PICKS_SPORT, MIN_CONFIDENCE, VALUE_THRESHOLD
 from value_bot.sports.nfl import get_league_average, get_nfl_games, get_team_scores
 
 from value_bot.db import already_sent_bet
-from value_bot.store import store
+from value_bot.run_context import RunContext
 
 log = logging.getLogger(__name__)
 
@@ -16,10 +16,10 @@ log = logging.getLogger(__name__)
 # salen de fútbol/NBA y la probabilidad NFL ya está anclada al mercado.
 
 
-def _rating(team_id: str | None, league_avg: float) -> dict:
+def _rating(ctx: RunContext, team_id: str | None, league_avg: float) -> dict:
     if not team_id:
         return team_rating([], league_avg, current_season=False)
-    team = get_team_scores(team_id)
+    team = get_team_scores(ctx, team_id)
     return team_rating(team.scores, league_avg, current_season=team.current,
                        previous=team.previous)
 
@@ -30,9 +30,9 @@ def _has_data(rating: dict) -> bool:
     return bool(rating["games"] or rating["previous_games"])
 
 
-def get_nfl_picks() -> list[Pick]:
-    scheduled = get_nfl_games()
-    store.games_analyzed["nfl"] = len(scheduled)
+def get_nfl_picks(ctx: RunContext) -> list[Pick]:
+    scheduled = get_nfl_games(ctx)
+    ctx.games_analyzed["nfl"] = len(scheduled)
     games = [g for g in scheduled if is_pickable_week(g)]
     if len(games) < len(scheduled):
         log.info("NFL: %d juegos de semanas 1–2 sin picks (ratings con datos del año anterior)",
@@ -41,13 +41,13 @@ def get_nfl_picks() -> list[Pick]:
         log.info("NFL picks: 0 (sin juegos elegibles)")
         return []
 
-    avg = get_league_average()
+    avg = get_league_average(ctx)
     log.info("NFL media de liga: %.1f pts/equipo", avg)
 
     all_picks = []
     for game in games:
-        home_rating = _rating(game["home_id"], avg)
-        away_rating = _rating(game["away_id"], avg)
+        home_rating = _rating(ctx, game["home_id"], avg)
+        away_rating = _rating(ctx, game["away_id"], avg)
         if not (_has_data(home_rating) and _has_data(away_rating)):
             log.info("NFL %s vs %s: sin marcadores de ambos equipos → sin picks", game["home"], game["away"])
             continue
