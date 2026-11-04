@@ -30,12 +30,12 @@ def test_picks_breaking_the_contract_are_dropped(monkeypatch):
 def _flashscore_runs(monkeypatch, football_on, flashscore_on):
     ran = []
 
-    async def fake_scrapers():
+    async def fake_scrapers(ctx):
         ran.append(True)
     monkeypatch.setattr(main, "run_playwright_scrapers", fake_scrapers)
     monkeypatch.setattr("value_bot.sports_registry.SPORTS_ENABLED", {"football": football_on, "nba": True, "nfl": True})
     monkeypatch.setattr(main, "FLASHSCORE_ENABLED", flashscore_on)
-    asyncio.run(main._football_scrapers())
+    asyncio.run(main._football_scrapers(RunContext()))
     return bool(ran)
 
 

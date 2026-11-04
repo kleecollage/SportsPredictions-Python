@@ -47,18 +47,15 @@ def test_main_passes_one_context_to_every_sport_and_reads_its_counts(monkeypatch
     assert ctx.games_analyzed == {"football": 2, "nba": 2, "nfl": 2}
 
 
-def test_store_sport_that_fails_still_reports_its_count(monkeypatch):
-    # Igual que NFL, que escribe ctx.games_analyzed antes de poder fallar
-    def failing():
-        main.store.games_analyzed["nba"] = 5
-        raise RuntimeError("nba_api raro")
-
-    main.store.clear_run_caches()
+def test_football_that_fails_still_reports_its_count(monkeypatch):
+    # Como NFL: el conteo se escribe antes de pedir stats, que es lo que puede fallar
+    from value_bot.analysis import football_picks as fp
+    monkeypatch.setattr(fp, "collect_football_fixtures", lambda c: [{"home": "A", "away": "B"}] * 4)
+    monkeypatch.setattr(fp, "build_football_stats", lambda c, f: (_ for _ in ()).throw(RuntimeError("football-data raro")))
     ctx = RunContext()
     with pytest.raises(RuntimeError):
-        main._from_store(failing, "nba")(ctx)
-    assert ctx.games_analyzed == {"nba": 5}
-    main.store.clear_run_caches()
+        fp.get_football_picks(ctx)
+    assert ctx.games_analyzed == {"football": 4}
 
 
 def test_context_fields_cannot_be_replaced():
@@ -115,3 +112,63 @@ def test_nba_form_from_the_context_reaches_the_message():
     msg = ts.build_message({"nba": [pick]}, [], nba_form=form)
     assert "Celtics: 118.2pts" in msg and "Bulls: 104.5pts" in msg
     assert "118.2pts" not in ts.build_message({"nba": [pick]}, [])
+
+
+# ── Fútbol ────────────────────────────────────────────────────────
+
+def test_football_state_starts_clean_in_each_run():
+    first = RunContext()
+    first.football.afl_blocked.set()
+    first.football.odds["soccer_epl"] = [{"id": "x"}]
+    first.football.credits.left = 12
+    first.football.team_ids[("Arsenal", 39, 2024)] = 42
+    second = RunContext()
+    assert not second.football.afl_blocked.is_set()
+    assert second.football.odds == {} and second.football.credits.left is None and second.football.team_ids == {}
+
+
+def test_odds_are_fetched_once_per_league_and_run(monkeypatch):
+    from value_bot.sports import football_odds as fo
+    calls = []
+    monkeypatch.setattr(fo, "THE_ODDS_API_KEY", "k")
+    monkeypatch.setattr(fo, "_odds_get", lambda path, params: calls.append(path) or ([], 150))
+    run = RunContext()
+    fo.get_real_odds(run, "soccer_epl", "A", "B")
+    fo.get_real_odds(run, "soccer_epl", "C", "D")
+    fo.get_real_odds(RunContext(), "soccer_epl", "A", "B")
+    assert len(calls) == 2 and run.football.credits.left == 150
+
+
+def test_store_module_is_gone():
+    import importlib.util
+    from value_bot import main
+    assert importlib.util.find_spec("value_bot.store") is None
+    assert not hasattr(main, "_from_store")
+
+
+def test_team_id_lookup_is_cached_per_run_not_across_runs(monkeypatch):
+    from value_bot.sports import football
+    searches = []
+
+    def api_sports_get(base, endpoint, params):
+        searches.append(params["search"])
+        return {"response": [{"team": {"id": 42, "name": "Arsenal"}}]}
+    monkeypatch.setattr(football, "api_sports_get", api_sports_get)
+    run = RunContext()
+    assert football._resolve_team_id_by_name(run, "Arsenal", 39, 2024) == 42
+    assert football._resolve_team_id_by_name(run, "Arsenal", 39, 2024) == 42
+    assert len(searches) == 1
+    football._resolve_team_id_by_name(RunContext(), "Arsenal", 39, 2024)
+    assert len(searches) == 2
+
+
+def test_football_picks_replace_the_btts_fixtures_instead_of_appending(monkeypatch):
+    from value_bot.analysis import football_picks as fp
+    fix = {"home": "A", "away": "B", "league": "Premier League"}
+    monkeypatch.setattr(fp, "collect_football_fixtures", lambda c: [fix])
+    monkeypatch.setattr(fp, "build_football_stats", lambda c, f: {})
+    ctx = RunContext()
+    ctx.football.stats[("Premier League", "Viejo")] = {}
+    fp.get_football_picks(ctx)
+    fp.get_football_picks(ctx)
+    assert ctx.football.fixtures == [fix] and ctx.football.stats == {}

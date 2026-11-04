@@ -4,7 +4,7 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from value_bot.config import FALLBACK_LEAGUES_FOOTBALL, PLAYWRIGHT_ENABLED, PLAYWRIGHT_TIMEOUT, afl_season
-from value_bot.store import store
+from value_bot.run_context import RunContext
 from value_bot.scrapers.playwright_scraper import (
     BS4_OK, PLAYWRIGHT_OK,
     _build_stealth_browser, _human_delay, _accept_cookies,
@@ -104,8 +104,8 @@ async def _scrape_football_with_context(context) -> list:
     return all_fix
 
 
-async def run_playwright_scrapers() -> None:
-    """Scrapea los fixtures de fútbol de Flashscore y popula store.pw_football_fixtures."""
+async def run_playwright_scrapers(ctx: RunContext) -> None:
+    """Scrapea los fixtures de fútbol de Flashscore y llena ctx.football.flashscore_fixtures."""
     if not (PLAYWRIGHT_OK and PLAYWRIGHT_ENABLED):
         log.info("Playwright: no disponible/desactivado → Capa 4 saltada")
         return
@@ -120,9 +120,9 @@ async def run_playwright_scrapers() -> None:
         async with async_playwright() as p:
             browser, context = await _build_stealth_browser(p)
             try:
-                store.pw_football_fixtures = await _scrape_football_with_context(context)
+                ctx.football.flashscore_fixtures.extend(await _scrape_football_with_context(context))
             finally:
                 await browser.close()
-        log.info("Playwright completo → Fútbol:%d", len(store.pw_football_fixtures))
+        log.info("Playwright completo → Fútbol:%d", len(ctx.football.flashscore_fixtures))
     except Exception as exc:
         log.warning("run_playwright_scrapers: %s", exc)

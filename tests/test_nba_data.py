@@ -9,16 +9,8 @@ from value_bot.analysis import nba_picks
 from value_bot.scrapers import espn, flashscore
 from value_bot.sports import nba
 from value_bot.run_context import RunContext
-from value_bot.store import store
 
 pytestmark = pytest.mark.skipif(not nba.NBA_API_OK, reason="nba_api no instalado")
-
-
-@pytest.fixture(autouse=True)
-def _clean_store():
-    store.clear_run_caches()
-    yield
-    store.clear_run_caches()
 
 
 def _tid(name):
@@ -208,7 +200,7 @@ def test_only_the_nba_finals_headline_counts_as_finals(headline, expected):
 
 # ── Playwright: solo fútbol (NBA ya no lo usa) ────────────────────
 
-def test_playwright_scrapes_only_football(monkeypatch):
+def test_playwright_scrapes_only_football(monkeypatch, ctx):
     ran = []
 
     class _Ctx:
@@ -228,10 +220,9 @@ def test_playwright_scrapes_only_football(monkeypatch):
     monkeypatch.setattr(flashscore, "_build_stealth_browser", fake_build)
     monkeypatch.setattr(flashscore, "_scrape_football_with_context", fake_football)
 
-    asyncio.run(flashscore.run_playwright_scrapers())
-    assert ran == ["football"] and store.pw_football_fixtures == [{"home": "A", "away": "B"}]
+    asyncio.run(flashscore.run_playwright_scrapers(ctx))
+    assert ran == ["football"] and ctx.football.flashscore_fixtures == [{"home": "A", "away": "B"}]
     assert not hasattr(flashscore, "_scrape_nba_with_context")
-    assert not hasattr(store, "pw_nba_games")
 
 
 # ── H1: respuestas con esquema inesperado no tumban la corrida ────

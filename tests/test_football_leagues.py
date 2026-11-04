@@ -6,7 +6,6 @@ import pytest
 
 from value_bot import config
 from value_bot.sports import football
-from value_bot.store import store
 
 REQUIRED = {
     # liga: (código football-data o None, id api-football, clave The Odds API)
@@ -64,8 +63,8 @@ def sources(monkeypatch):
     return calls
 
 
-def test_europa_league_comes_from_api_football_when_football_data_is_set(sources):
-    fixtures = football.collect_football_fixtures()
+def test_europa_league_comes_from_api_football_when_football_data_is_set(sources, ctx):
+    fixtures = football.collect_football_fixtures(ctx)
     by_league = {f["league"]: f for f in fixtures}
 
     assert set(REQUIRED) <= set(by_league)
@@ -76,21 +75,21 @@ def test_europa_league_comes_from_api_football_when_football_data_is_set(sources
     assert sources["afl"] == [3]                                     # el resto salió de football-data
 
 
-def test_leagues_with_football_data_keep_its_fixtures(sources):
-    by_league = {f["league"]: f for f in football.collect_football_fixtures()}
+def test_leagues_with_football_data_keep_its_fixtures(sources, ctx):
+    by_league = {f["league"]: f for f in football.collect_football_fixtures(ctx)}
     for league in ("Premier League", "LaLiga", "Champions League"):
         fix = by_league[league]
         assert (fix["source"], fix["fd_code"]) == ("football-data", REQUIRED[league][0])
 
 
-def test_without_football_data_token_all_leagues_use_api_football(sources, monkeypatch):
+def test_without_football_data_token_all_leagues_use_api_football(sources, monkeypatch, ctx):
     monkeypatch.setattr(football, "fd_enabled", lambda: False)
-    fixtures = football.collect_football_fixtures()
+    fixtures = football.collect_football_fixtures(ctx)
     assert sources["fd"] == []
     assert {f["league"] for f in fixtures} >= set(REQUIRED)
 
 
-def test_fallback_leagues_still_run_when_top_leagues_are_empty(monkeypatch):
+def test_fallback_leagues_still_run_when_top_leagues_are_empty(monkeypatch, ctx):
     asked = []
 
     def api_sports_get(base, endpoint, params):
@@ -100,7 +99,7 @@ def test_fallback_leagues_still_run_when_top_leagues_are_empty(monkeypatch):
 
     monkeypatch.setattr(football, "fd_enabled", lambda: False)
     monkeypatch.setattr(football, "api_sports_get", api_sports_get)
-    fixtures = football.collect_football_fixtures()
+    fixtures = football.collect_football_fixtures(ctx)
     assert [f["league"] for f in fixtures] == ["MLS"]
     assert set(info["afl"] for info in config.TOP_LEAGUES_FOOTBALL.values()) <= set(asked)
 
@@ -121,15 +120,15 @@ def _many_fd_matches(monkeypatch, n=25):
 
 
 @pytest.mark.parametrize("league, cap", FULL_ROUND.items())
-def test_premier_laliga_and_champions_take_a_full_round(monkeypatch, league, cap):
+def test_premier_laliga_and_champions_take_a_full_round(monkeypatch, league, cap, ctx):
     _many_fd_matches(monkeypatch)
-    fixtures = [f for f in football.collect_football_fixtures() if f["league"] == league]
+    fixtures = [f for f in football.collect_football_fixtures(ctx) if f["league"] == league]
     assert len(fixtures) == cap == config.TOP_LEAGUES_FOOTBALL[league]["max_fixtures"]
 
 
-def test_other_leagues_keep_the_default_cap(monkeypatch):
+def test_other_leagues_keep_the_default_cap(monkeypatch, ctx):
     _many_fd_matches(monkeypatch)
-    fixtures = [f for f in football.collect_football_fixtures() if f["league"] == "Bundesliga"]
+    fixtures = [f for f in football.collect_football_fixtures(ctx) if f["league"] == "Bundesliga"]
     assert len(fixtures) == football.MAX_FIXTURES_LEAGUE == 4
 
 
@@ -138,57 +137,44 @@ def test_other_leagues_keep_the_default_cap(monkeypatch):
 PLAN_ERROR = {"errors": {"plan": "Free plans do not have access to this season"}, "response": []}
 
 
-@pytest.fixture(autouse=True)
-def _fresh_run():
-    store.clear_run_caches()
-    yield
-    store.clear_run_caches()
-
-
-def test_api_football_plan_error_is_warned_once_and_stops_api_football(monkeypatch, caplog):
+def test_api_football_plan_error_is_warned_once_and_stops_api_football(monkeypatch, caplog, ctx):
     calls = []
     monkeypatch.setattr(football, "fd_enabled", lambda: False)
     monkeypatch.setattr(football, "api_sports_get", lambda *a, **k: calls.append(a) or PLAN_ERROR)
-    fixtures = football.collect_football_fixtures()
-    stats = football.build_football_stats([{"home": "A", "away": "B", "league": "LaLiga",
+    fixtures = football.collect_football_fixtures(ctx)
+    stats = football.build_football_stats(ctx, [{"home": "A", "away": "B", "league": "LaLiga",
                                            "home_id_afl": 1, "away_id_afl": 2, "afl_lid": 140, "afl_season": 2026}])
     plan_warnings = [r for r in caplog.records if r.levelname == "WARNING" and "plan" in r.getMessage()]
     assert (fixtures, stats, len(calls), len(plan_warnings)) == ([], {}, 1, 1)
-    assert store.afl_blocked
-
-
-def test_clear_run_caches_unblocks_api_football():
-    store.afl_blocked = True
-    store.clear_run_caches()
-    assert store.afl_blocked is False
+    assert ctx.football.afl_blocked.is_set()
 
 
 # ── football-data: respuesta vacía ≠ sin respuesta ───────────────
 
-def test_empty_football_data_round_does_not_ask_api_football(monkeypatch):
+def test_empty_football_data_round_does_not_ask_api_football(monkeypatch, ctx):
     asked = []
     monkeypatch.setattr(football, "fd_enabled", lambda: True)
     monkeypatch.setattr(football, "fd_get", lambda path, params=None: {"matches": []})
     monkeypatch.setattr(football, "api_sports_get", lambda b, e, params: asked.append(params["league"]) or {"response": []})
-    football.collect_football_fixtures()
+    football.collect_football_fixtures(ctx)
     with_fd = {info["afl"] for info in config.TOP_LEAGUES_FOOTBALL.values() if info.get("fd")}
     assert not with_fd & set(asked)
 
 
-def test_football_data_without_answer_falls_back_to_api_football(monkeypatch):
+def test_football_data_without_answer_falls_back_to_api_football(monkeypatch, ctx):
     monkeypatch.setattr(football, "fd_enabled", lambda: True)
     monkeypatch.setattr(football, "fd_get", lambda path, params=None: {})
     monkeypatch.setattr(football, "api_sports_get", lambda b, e, params: {"response": [_afl_match(params["league"])]})
-    leagues = {f["league"] for f in football.collect_football_fixtures()}
+    leagues = {f["league"] for f in football.collect_football_fixtures(ctx)}
     assert "Premier League" in leagues
 
 
-def test_football_data_fixture_date_is_the_eastern_day(monkeypatch):
+def test_football_data_fixture_date_is_the_eastern_day(monkeypatch, ctx):
     late = {**_fd_match("PL"), "utcDate": "2026-11-06T03:00:00Z"}   # 22:00 ET del día 5
     monkeypatch.setattr(football, "fd_enabled", lambda: True)
     monkeypatch.setattr(football, "fd_get", lambda path, params=None: {"matches": [late]})
     monkeypatch.setattr(football, "api_sports_get", lambda *a, **k: {"response": []})
-    (fix, *_) = [f for f in football.collect_football_fixtures() if f["league"] == "Premier League"]
+    (fix, *_) = [f for f in football.collect_football_fixtures(ctx) if f["league"] == "Premier League"]
     assert (fix["date"], fix["kickoff"]) == ("2026-11-05", "2026-11-06T03:00:00Z")
 
 
@@ -196,19 +182,19 @@ def test_football_data_fixture_date_is_the_eastern_day(monkeypatch):
 
 @pytest.mark.parametrize("errors", [{"requests": "You have reached the request limit for the day"},
                                     {"rateLimit": "Too many requests"}])
-def test_request_limit_also_stops_api_football(monkeypatch, errors):
+def test_request_limit_also_stops_api_football(monkeypatch, errors, ctx):
     calls = []
     monkeypatch.setattr(football, "fd_enabled", lambda: False)
     monkeypatch.setattr(football, "api_sports_get", lambda *a, **k: calls.append(a) or {"errors": errors})
-    football.collect_football_fixtures()
-    assert len(calls) == 1 and store.afl_blocked
+    football.collect_football_fixtures(ctx)
+    assert len(calls) == 1 and ctx.football.afl_blocked.is_set()
 
 
-def test_no_fallback_attempt_when_api_football_is_blocked(monkeypatch, caplog):
+def test_no_fallback_attempt_when_api_football_is_blocked(monkeypatch, caplog, ctx):
     monkeypatch.setattr(football, "fd_enabled", lambda: False)
     monkeypatch.setattr(football, "api_sports_get", lambda *a, **k: PLAN_ERROR)
     with caplog.at_level(logging.INFO, logger=football.log.name):
-        football.collect_football_fixtures()
+        football.collect_football_fixtures(ctx)
     assert "Activando fallback" not in caplog.text and "Football fixtures: 0" in caplog.text
 
 

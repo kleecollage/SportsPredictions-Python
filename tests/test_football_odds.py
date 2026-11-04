@@ -2,7 +2,6 @@
 import pytest
 
 from value_bot.sports import football_odds as fo
-from value_bot.store import store
 
 
 def _book(key, h2h=None, totals=None):
@@ -149,49 +148,47 @@ def odds_api(monkeypatch):
     monkeypatch.setattr(fo, "THE_ODDS_API_KEY", "key-de-prueba")
     monkeypatch.setattr(fo, "FOOTBALL_TOTALS_ENABLED", True)
     monkeypatch.setattr(fo, "_odds_get", fake)
-    store.clear_run_caches()
-    yield calls
-    store.clear_run_caches()
+    return calls
 
 
-def test_real_odds_bring_result_totals_and_event_id(odds_api):
-    odds = fo.get_real_odds("soccer_uefa_champs_league", "Galatasaray SK", "VfB Stuttgart")
+def test_real_odds_bring_result_totals_and_event_id(odds_api, ctx):
+    odds = fo.get_real_odds(ctx, "soccer_uefa_champs_league", "Galatasaray SK", "VfB Stuttgart")
     assert odds == {"home_odds": 2.6, "away_odds": 2.5, "draw_odds": 3.6, "total_line": 2.5,
                     "over_odds": 1.8, "under_odds": 2.0, "odds_event_id": "ev1"}
-    assert odds_api == ["h2h,totals"] and store.odds_credits_left == 300
+    assert odds_api == ["h2h,totals"] and ctx.football.credits.left == 300
 
 
-def test_with_totals_off_only_results_are_requested(odds_api, monkeypatch):
+def test_with_totals_off_only_results_are_requested(odds_api, monkeypatch, ctx):
     monkeypatch.setattr(fo, "FOOTBALL_TOTALS_ENABLED", False)
-    fo.get_real_odds("soccer_epl", "Galatasaray", "VfB Stuttgart")
+    fo.get_real_odds(ctx, "soccer_epl", "Galatasaray", "VfB Stuttgart")
     assert odds_api == ["h2h"]
 
 
-def test_one_request_per_league_per_run(odds_api):
+def test_one_request_per_league_per_run(odds_api, ctx):
     for _ in range(3):
-        fo.get_real_odds("soccer_epl", "Galatasaray", "VfB Stuttgart")
+        fo.get_real_odds(ctx, "soccer_epl", "Galatasaray", "VfB Stuttgart")
     assert len(odds_api) == 1
 
 
-def test_low_credits_only_ask_for_results(odds_api, caplog):
-    store.odds_credits_left = fo.ODDS_CREDITS_RESERVE - 1
-    fo.get_real_odds("soccer_epl", "Galatasaray", "VfB Stuttgart")
+def test_low_credits_only_ask_for_results(odds_api, caplog, ctx):
+    ctx.football.credits.left = fo.ODDS_CREDITS_RESERVE - 1
+    fo.get_real_odds(ctx, "soccer_epl", "Galatasaray", "VfB Stuttgart")
     assert odds_api == ["h2h"] and "créditos" in caplog.text
 
 
-def test_real_odds_skip_an_event_from_another_day(odds_api):
-    assert fo.get_real_odds("soccer_epl", "Galatasaray", "VfB Stuttgart", date="2026-11-02") is not None
-    store.odds_cache["soccer_epl"] = [{**store.odds_cache["soccer_epl"][0], "commence_time": "2026-11-09T19:00:00Z"}]
-    assert fo.get_real_odds("soccer_epl", "Galatasaray", "VfB Stuttgart", date="2026-11-02") is None
+def test_real_odds_skip_an_event_from_another_day(odds_api, ctx):
+    assert fo.get_real_odds(ctx, "soccer_epl", "Galatasaray", "VfB Stuttgart", date="2026-11-02") is not None
+    ctx.football.odds["soccer_epl"] = [{**ctx.football.odds["soccer_epl"][0], "commence_time": "2026-11-09T19:00:00Z"}]
+    assert fo.get_real_odds(ctx, "soccer_epl", "Galatasaray", "VfB Stuttgart", date="2026-11-02") is None
 
 
-def test_unknown_match_has_no_odds(odds_api):
-    assert fo.get_real_odds("soccer_epl", "Real Madrid", "Barcelona") is None
+def test_unknown_match_has_no_odds(odds_api, ctx):
+    assert fo.get_real_odds(ctx, "soccer_epl", "Real Madrid", "Barcelona") is None
 
 
-def test_fixture_without_event_warns_once_per_run(odds_api, caplog):
+def test_fixture_without_event_warns_once_per_run(odds_api, caplog, ctx):
     for _ in range(2):
-        fo.get_real_odds("soccer_epl", "Real Madrid CF", "FC Barcelona")
+        fo.get_real_odds(ctx, "soccer_epl", "Real Madrid CF", "FC Barcelona")
     warnings = [r for r in caplog.records if "sin evento" in r.getMessage()]
     assert len(warnings) == 1 and "Real Madrid CF" in warnings[0].getMessage()
 
@@ -210,18 +207,17 @@ def test_credits_header_never_breaks_the_request(monkeypatch, remaining, credits
     assert fo._odds_get("/sports/soccer_epl/odds/", {}) == ([], credits)
 
 
-def test_without_key_or_sport_no_request(odds_api, monkeypatch):
+def test_without_key_or_sport_no_request(odds_api, monkeypatch, ctx):
     monkeypatch.setattr(fo, "THE_ODDS_API_KEY", "")
-    assert fo.get_real_odds("soccer_epl", "Galatasaray", "VfB Stuttgart") is None
-    assert fo.get_real_odds("", "Galatasaray", "VfB Stuttgart") is None
+    assert fo.get_real_odds(ctx, "soccer_epl", "Galatasaray", "VfB Stuttgart") is None
+    assert fo.get_real_odds(ctx, "", "Galatasaray", "VfB Stuttgart") is None
     assert odds_api == []
 
 
-def test_unexpected_response_means_no_odds(monkeypatch):
+def test_unexpected_response_means_no_odds(monkeypatch, ctx):
     monkeypatch.setattr(fo, "THE_ODDS_API_KEY", "key-de-prueba")
     monkeypatch.setattr(fo, "_odds_get", lambda path, params: ({"message": "error"}, None))
-    store.clear_run_caches()
-    assert fo.get_real_odds("soccer_epl", "Galatasaray", "VfB Stuttgart") is None
+    assert fo.get_real_odds(ctx, "soccer_epl", "Galatasaray", "VfB Stuttgart") is None
 
 
 # ── BTTS por evento ───────────────────────────────────────────────
@@ -237,7 +233,7 @@ def test_btts_comes_from_one_bookmaker_with_both_prices():
     assert fo.parse_btts(_game(_btts_book("a", "x", 1.9))) is None and fo.parse_btts([]) is None
 
 
-def test_btts_odds_ask_for_one_event_and_track_credits(monkeypatch):
+def test_btts_odds_ask_for_one_event_and_track_credits(monkeypatch, ctx):
     calls = []
 
     def fake(path, params):
@@ -245,8 +241,6 @@ def test_btts_odds_ask_for_one_event_and_track_credits(monkeypatch):
         return _game(_btts_book("a", 2.0, 1.8)), 120
     monkeypatch.setattr(fo, "THE_ODDS_API_KEY", "key-de-prueba")
     monkeypatch.setattr(fo, "_odds_get", fake)
-    store.clear_run_caches()
-    assert fo.get_btts_odds("soccer_epl", "ev1") == (2.0, 1.8)
-    assert calls == [("/sports/soccer_epl/events/ev1/odds", "btts")] and store.odds_credits_left == 120
-    assert fo.get_btts_odds("soccer_epl", "") is None and len(calls) == 1
-    store.clear_run_caches()
+    assert fo.get_btts_odds(ctx, "soccer_epl", "ev1") == (2.0, 1.8)
+    assert calls == [("/sports/soccer_epl/events/ev1/odds", "btts")] and ctx.football.credits.left == 120
+    assert fo.get_btts_odds(ctx, "soccer_epl", "") is None and len(calls) == 1

@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import sys
-from collections.abc import Callable
 from datetime import datetime
 
 from value_bot.config import FLASHSCORE_ENABLED, MODEL_SINCE, validate_env
@@ -18,7 +17,6 @@ from value_bot.scrapers.espn import get_upcoming_nba_events
 from value_bot.telegram_sender import build_message, build_weekly_report, send_telegram
 from value_bot.sports_registry import SPORTS_BY_KEY, active_sports, sport_keys
 from value_bot.run_context import RunContext
-from value_bot.store import store
 from value_bot.db import (
     get_model_calibration, get_parlay_summary, get_recent_picks, get_roi_summary, init_db, save_parlays, save_picks,
 )
@@ -33,22 +31,8 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 
-def _from_store(get_picks: Callable[[], list[Pick]], sport: str) -> Callable[[RunContext], list[Pick]]:
-    """
-    Deportes que aún usan `store`: se corren igual y su conteo se copia al contexto, también
-    si fallan (como NFL, que escribe ctx.games_analyzed antes de poder fallar).
-    """
-    def run(ctx: RunContext) -> list[Pick]:
-        try:
-            return get_picks()
-        finally:
-            if sport in store.games_analyzed:
-                ctx.games_analyzed[sport] = store.games_analyzed[sport]
-    return run
-
-
-# Cada fuente recibe el RunContext de la corrida (fútbol todavía vía store)
-PICK_SOURCES = {"football": _from_store(get_football_picks, "football"),
+# Cada fuente recibe el RunContext de la corrida
+PICK_SOURCES = {"football": get_football_picks,
                 "nba": get_nba_picks,
                 "nfl": get_nfl_picks}
 BTTS_FLAG = "--btts"   # BTTS gasta créditos por partido: solo a mano, nunca desde el scheduler
@@ -68,12 +52,12 @@ def _choose_btts_leagues(counts: dict[str, int], credits_left: int | None) -> fr
     return pick_leagues(options, credits_left)
 
 
-def _btts_picks(football_picks: list[dict], argv: list[str]) -> list[dict]:
+def _btts_picks(ctx: RunContext, football_picks: list[dict], argv: list[str]) -> list[dict]:
     """BTTS bajo demanda (`--btts`): selector de ligas en la terminal y árbol por partido."""
     if BTTS_FLAG not in argv or "football" not in active_sports():
         return []
     try:
-        picks, decisions = get_btts_picks(football_picks, _choose_btts_leagues)
+        picks, decisions = get_btts_picks(ctx, football_picks, _choose_btts_leagues)
     except Exception:
         log.exception("BTTS bajo demanda falló → el mensaje sale sin BTTS")
         return []
@@ -111,10 +95,10 @@ def _current_performance() -> dict:
     return get_roi_summary(days=7, **_current_scope())
 
 
-async def _football_scrapers():
+async def _football_scrapers(ctx: RunContext) -> None:
     """Capa 4 fútbol: Playwright Flashscore antes de los picks, solo con FLASHSCORE_ENABLED."""
     if "football" in active_sports() and FLASHSCORE_ENABLED:
-        await run_playwright_scrapers()
+        await run_playwright_scrapers(ctx)
 
 
 def _resolve_results():
@@ -147,18 +131,14 @@ async def main(argv: list[str] | None = None) -> None:
         return
     log.info("nba_api disponible: %s | playwright: %s", _NBA_API_OK, PLAYWRIGHT_OK)
 
-    # Limpiar caches del run anterior para garantizar datos frescos
-    store.clear_run_caches()
-
     # Inicializar DB de historial y resolver juegos ya terminados (para el ROI del mensaje)
     init_db()
     _resolve_results()
 
-    await _football_scrapers()
-
-    ctx = RunContext()
+    ctx = RunContext()   # estado de esta corrida: nada viene de la anterior
+    await _football_scrapers(ctx)
     picks = await _collect_picks(ctx)
-    picks = {**picks, "football": picks["football"] + _btts_picks(picks["football"], argv or [])}
+    picks = {**picks, "football": picks["football"] + _btts_picks(ctx, picks["football"], argv or [])}
 
     all_picks = [pick for sport in sport_keys() for pick in picks[sport]]
     parlays   = build_parlays(all_picks)

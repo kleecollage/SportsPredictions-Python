@@ -96,22 +96,22 @@ def _fd_stub(monkeypatch, by_code):
     return football, calls
 
 
-def test_stats_come_from_one_finished_matches_call_per_competition(monkeypatch):
+def test_stats_come_from_one_finished_matches_call_per_competition(monkeypatch, ctx):
     football, calls = _fd_stub(monkeypatch, {"PL": SEASON})
     fixtures = [{"home": "A", "away": "B", "league": "Premier League", "fd_code": "PL"},
                 {"home": "C", "away": "B", "league": "Premier League", "fd_code": "PL"}]
-    stats = football.build_football_stats(fixtures)
+    stats = football.build_football_stats(ctx, fixtures)
     assert calls == [("/competitions/PL/matches", {"status": "FINISHED"})]
     assert football.side_stats(stats, fixtures[0], "home") == fr.team_ratings(SEASON)["A"]
     assert set(stats) == {("Premier League", t) for t in "ABC"}
 
 
-def test_a_team_in_two_competitions_keeps_each_ones_stats(monkeypatch):
+def test_a_team_in_two_competitions_keeps_each_ones_stats(monkeypatch, ctx):
     # A juega Premier (5 partidos) y Champions (3): el partido de Champions no usa los de la Premier
     cl = [_m(1, "A", "X", 0, 1), _m(2, "X", "A", 2, 0), _m(3, "A", "X", 1, 1)]
     football, _ = _fd_stub(monkeypatch, {"PL": SEASON, "CL": cl})
     pl_fix = {"home": "A", "away": "B", "league": "Premier League", "fd_code": "PL"}
     cl_fix = {"home": "A", "away": "X", "league": "Champions League", "fd_code": "CL"}
-    stats = football.build_football_stats([cl_fix, pl_fix])
+    stats = football.build_football_stats(ctx, [cl_fix, pl_fix])
     assert football.side_stats(stats, pl_fix, "home")["played"] == 5
     assert football.side_stats(stats, cl_fix, "home") == fr.team_ratings(cl)["A"]

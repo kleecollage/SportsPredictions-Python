@@ -24,7 +24,7 @@ import requests
 
 from value_bot.analysis.football_model import FOOTBALL_TOTALS_ENABLED
 from value_bot.config import ODDS_BASE, THE_ODDS_API_KEY
-from value_bot.store import store
+from value_bot.run_context import RunContext
 
 log = logging.getLogger(__name__)
 
@@ -176,43 +176,44 @@ def _find_game(games: list, home: str, away: str, date: str | None = None) -> di
     return candidates[0] if candidates else None
 
 
-def _warn_unmatched(sport_key: str, home: str, away: str, n_games: int) -> None:
+def _warn_unmatched(ctx: RunContext, sport_key: str, home: str, away: str, n_games: int) -> None:
     """Una vez por partido y corrida: sin cuota no hay pick y no debe parecer un día sin value."""
-    if (sport_key, home, away) in store.odds_unmatched:
+    if (sport_key, home, away) in ctx.football.odds_unmatched:
         return
-    store.odds_unmatched.add((sport_key, home, away))
+    ctx.football.odds_unmatched.add((sport_key, home, away))
     log.warning("The Odds API %s: sin evento para %s vs %s (%d eventos en la liga) → sin cuota",
                 sport_key, home, away, n_games)
 
 
-def _league_games(sport_key: str) -> list:
+def _league_games(ctx: RunContext, sport_key: str) -> list:
     """Partidos con cuotas de la liga, una llamada por corrida (h2h + totales si hay créditos)."""
-    if sport_key not in store.odds_cache:
-        low = store.odds_credits_left is not None and store.odds_credits_left < ODDS_CREDITS_RESERVE
+    credits_left = ctx.football.credits.left
+    if sport_key not in ctx.football.odds:
+        low = credits_left is not None and credits_left < ODDS_CREDITS_RESERVE
         if low and FOOTBALL_TOTALS_ENABLED:
             log.warning("The Odds API: %d créditos (< %d) → solo 1X2, sin totales",
-                        store.odds_credits_left, ODDS_CREDITS_RESERVE)
+                        credits_left, ODDS_CREDITS_RESERVE)
         data, credits = _odds_get(f"/sports/{sport_key}/odds/",
                                   {"regions": ODDS_REGION,
                                    "markets": "h2h,totals" if FOOTBALL_TOTALS_ENABLED and not low else "h2h"})
         if credits is not None:
-            store.odds_credits_left = credits
-        store.odds_cache[sport_key] = data if isinstance(data, list) else []
-    return store.odds_cache[sport_key]
+            ctx.football.credits.left = credits
+        ctx.football.odds[sport_key] = data if isinstance(data, list) else []
+    return ctx.football.odds[sport_key]
 
 
-def get_real_odds(sport_key: str, home: str, away: str, date: str | None = None) -> dict | None:
+def get_real_odds(ctx: RunContext, sport_key: str, home: str, away: str, date: str | None = None) -> dict | None:
     """
     1X2 (home/draw/away_odds), totales (total_line, over/under_odds) e id de evento del partido
     del día ET `date` (fecha del fixture); None sin partido.
     """
     if not THE_ODDS_API_KEY or not sport_key:
         return None
-    games = _league_games(sport_key)
+    games = _league_games(ctx, sport_key)
     game = _find_game(games, home, away, date)
     if game is None:
         if games:
-            _warn_unmatched(sport_key, home, away, len(games))
+            _warn_unmatched(ctx, sport_key, home, away, len(games))
         return None
     odds = {**parse_h2h(game), **parse_totals(game)}
     return {**odds, "odds_event_id": game.get("id")} if odds else None
@@ -227,12 +228,12 @@ def parse_btts(game: object) -> tuple[float, float] | None:
     return None
 
 
-def get_btts_odds(sport_key: str, event_id: str) -> tuple[float, float] | None:
+def get_btts_odds(ctx: RunContext, sport_key: str, event_id: str) -> tuple[float, float] | None:
     """Cuota BTTS de un evento (cuesta créditos: solo bajo demanda, nunca en el runner diario)."""
     if not (THE_ODDS_API_KEY and sport_key and event_id):
         return None
     data, credits = _odds_get(f"/sports/{sport_key}/events/{event_id}/odds",
                               {"regions": ODDS_REGION, "markets": "btts"})
     if credits is not None:
-        store.odds_credits_left = credits
+        ctx.football.credits.left = credits
     return parse_btts(data)

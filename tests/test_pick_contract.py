@@ -89,20 +89,20 @@ def test_nba_picks_meet_the_contract(monkeypatch, ctx):
     _assert_contract(nba_picks.get_nba_picks(ctx))
 
 
-def test_football_picks_meet_the_contract(monkeypatch):
+def test_football_picks_meet_the_contract(monkeypatch, ctx):
     fix = {"sport": "football", "league": "Bundesliga", "flag": "🇩🇪", "home": "Home FC", "away": "Away FC",
            "date": "2026-11-08", "kickoff": "2026-11-08T14:30:00Z", "event_id": "fd:1", "odds_key": "k"}
     stats = {"home": {"goals_for_pg": 1.5, "goals_against_pg": 1.5, "win_rate": 10, "draw_rate": 25,
                       "form": "LLLLL", "form_pts": 0, "played": 10},
              "away": {"goals_for_pg": 1.5, "goals_against_pg": 1.5, "win_rate": 80, "draw_rate": 25,
                       "form": "WWWWW", "form_pts": 15, "played": 10}}
-    monkeypatch.setattr(football_picks, "collect_football_fixtures", lambda: [fix])
-    monkeypatch.setattr(football_picks, "build_football_stats", lambda f: {})
+    monkeypatch.setattr(football_picks, "collect_football_fixtures", lambda c: [fix])
+    monkeypatch.setattr(football_picks, "build_football_stats", lambda c, f: {})
     monkeypatch.setattr(football_picks, "side_stats", lambda s, f, side: stats[side])
     monkeypatch.setattr(football_picks, "get_real_odds",
                         lambda *a, **k: {"home_odds": 4.0, "draw_odds": 3.6, "away_odds": 2.0})
     monkeypatch.setattr(football_picks, "already_sent_for_game", lambda *a, **k: False)
-    _assert_contract(football_picks.get_football_picks())
+    _assert_contract(football_picks.get_football_picks(ctx))
 
 
 @pytest.mark.parametrize("field", REQUIRED_FIELDS)
