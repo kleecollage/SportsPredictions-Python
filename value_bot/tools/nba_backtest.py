@@ -31,10 +31,11 @@ from value_bot.analysis.nba_model import (
 from value_bot.config import (
     ESPN_NBA_URL, MIN_CONFIDENCE, NBA_MIN_GAMES, VALUE_THRESHOLD, nba_season_start_year,
 )
-from value_bot.http_client import http_get
+from value_bot.scrapers.espn import now_et
 from value_bot.scrapers.espn_lines import obj, to_float
-from value_bot.tools.backtest_common import grade, has_full_market, outcome, parse_dt, parse_pickcenter
+from value_bot.tools.backtest_common import SUMMARY_KEYS, grade, has_full_market, outcome, parse_dt, parse_pickcenter
 from value_bot.tools.backtest_report import render_report
+from value_bot.tools.http_cache import cached_get, is_settled_day
 
 log = logging.getLogger(__name__)
 
@@ -159,10 +160,16 @@ def _season_days(start_year: int, until: date) -> list[str]:
     return [(first + timedelta(days=d)).strftime("%Y%m%d") for d in range((last - first).days + 1)]
 
 
+def _today_et() -> date:
+    return now_et().date()
+
+
 def _season_games(start_year: int, until: date) -> list[dict]:
     """Todos los juegos FINAL de temporada regular hasta `until` (un scoreboard por día)."""
+    today = _today_et()
     with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
-        boards = pool.map(lambda d: http_get(ESPN_NBA_URL, params={"dates": d}), _season_days(start_year, until))
+        boards = pool.map(lambda d: cached_get(ESPN_NBA_URL, {"dates": d}, cacheable=is_settled_day(d, today)),
+                          _season_days(start_year, until))
         games = [g for board in boards for g in parse_final_games(board)]
     return sorted(games, key=lambda g: g["date"])
 
@@ -181,7 +188,8 @@ def run(start_year: int, date_from: date | None = None, date_to: date | None = N
     if max_games:
         targets = targets[-max_games:]
     with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
-        summaries = pool.map(lambda g: http_get(ESPN_NBA_SUMMARY_URL, params={"event": g["event_id"]}), targets)
+        summaries = pool.map(lambda g: cached_get(ESPN_NBA_SUMMARY_URL, {"event": g["event_id"]},
+                                                  cacheable=True, keep=SUMMARY_KEYS), targets)
         lines_by_id = {g["event_id"]: parse_pickcenter(s) for g, s in zip(targets, summaries)}
 
     rows = []

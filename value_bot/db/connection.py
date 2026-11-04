@@ -4,7 +4,9 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent.parent.parent / "picks_history.db"
+from value_bot.config import REPO_ROOT
+
+DB_PATH = REPO_ROOT / "picks_history.db"
 
 
 @contextmanager

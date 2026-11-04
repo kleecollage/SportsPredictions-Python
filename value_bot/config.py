@@ -35,12 +35,19 @@ ESPN_NFL_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/score
 ESPN_NFL_SCHEDULE_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_id}/schedule"
 ESPN_NFL_TEAMS_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams"
 
+REPO_ROOT = Path(__file__).resolve().parent.parent   # raíz del repo: BD y caché de backtests
+
 # ── Respaldo de picks_history.db ──────────────────────────────────
 # La BD no está en git: cada corrida deja una copia en iCloud Drive (si existe) y se guardan
 # las últimas DB_BACKUP_KEEP. DB_BACKUP_DIR en el entorno la redirige (los tests lo hacen).
 _ICLOUD_DRIVE = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
 DB_BACKUP_DIR = Path(os.getenv("DB_BACKUP_DIR") or _ICLOUD_DRIVE / "ValueBot")
 DB_BACKUP_KEEP = 14
+
+# ── Caché HTTP de los backtests ───────────────────────────────────
+# Respuestas de ESPN que ya no cambian (juegos terminados), en .cache/ del repo (fuera de git).
+# BACKTEST_CACHE_DIR en el entorno la redirige (los tests lo hacen); borrar la carpeta la vacía.
+BACKTEST_CACHE_DIR = Path(os.getenv("BACKTEST_CACHE_DIR") or REPO_ROOT / ".cache" / "backtest_http")
 
 # ── Sports toggles ────────────────────────────────────────────────
 SPORTS_ENABLED = {

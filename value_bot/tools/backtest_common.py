@@ -3,6 +3,8 @@ from datetime import datetime
 
 from value_bot.analysis.market import american_to_decimal
 
+SUMMARY_KEYS = ("pickcenter",)   # lo único del summary ESPN que lee parse_pickcenter (para la caché)
+
 FULL_MARKET_KEYS = ("home_ml", "away_ml", "home_spread", "home_spread_odds", "away_spread_odds",
                     "total", "over_odds", "under_odds")
 

@@ -28,13 +28,14 @@ from value_bot.config import (
     ESPN_NFL_SCHEDULE_URL, ESPN_NFL_URL, MIN_CONFIDENCE, NFL_MIN_GAMES, VALUE_THRESHOLD,
     nfl_season,
 )
-from value_bot.http_client import http_get
+from value_bot.scrapers.espn import now_et
 from value_bot.sports.nfl import (
     PICKABLE_SEASON_TYPES, REGULAR_SEASON, SCHEDULE_FETCH_WORKERS, _status_name, _to_float,
     fetch_team_ids, league_average,
 )
-from value_bot.tools.backtest_common import grade, has_full_market, outcome, parse_dt, parse_pickcenter
+from value_bot.tools.backtest_common import SUMMARY_KEYS, grade, has_full_market, outcome, parse_dt, parse_pickcenter
 from value_bot.tools.backtest_report import render_report
+from value_bot.tools.http_cache import cached_get, is_settled_day
 
 log = logging.getLogger(__name__)
 
@@ -114,8 +115,9 @@ def replay_game(event: dict, lines: dict, current: dict, previous: dict, team_id
 
 def _team_history(team_id: str, season: int) -> list[tuple[datetime, float, float]]:
     """Juegos FINAL de temporada regular con fecha: [(kickoff, pts_a_favor, pts_en_contra)]."""
-    data = http_get(ESPN_NFL_SCHEDULE_URL.format(team_id=team_id),
-                    params={"season": season, "seasontype": REGULAR_SEASON})
+    data = cached_get(ESPN_NFL_SCHEDULE_URL.format(team_id=team_id),
+                      {"season": season, "seasontype": REGULAR_SEASON},
+                      cacheable=season < nfl_season())   # la temporada en curso sigue sumando juegos
     out = []
     for event in data.get("events") or []:
         comp = (event.get("competitions") or [{}])[0]
@@ -132,10 +134,12 @@ def _team_history(team_id: str, season: int) -> list[tuple[datetime, float, floa
 
 def _finished_events(days: int) -> list[dict]:
     today = datetime.now(timezone.utc)
+    today_et = now_et().date()
     events = []
     for offset in range(days, -1, -1):
         day = (today - timedelta(days=offset)).strftime("%Y%m%d")
-        for event in http_get(ESPN_NFL_URL, params={"dates": day}).get("events") or []:
+        board = cached_get(ESPN_NFL_URL, {"dates": day}, cacheable=is_settled_day(day, today_et))
+        for event in board.get("events") or []:
             comp = (event.get("competitions") or [{}])[0]
             if (_status_name(comp) == "STATUS_FINAL"
                     and (event.get("season") or {}).get("type") in PICKABLE_SEASON_TYPES):
@@ -155,7 +159,8 @@ def run(days: int, max_games: int | None = None) -> list[dict]:
     with ThreadPoolExecutor(max_workers=SCHEDULE_FETCH_WORKERS) as pool:
         current = dict(zip(team_ids, pool.map(lambda t: _team_history(t, season), team_ids)))
         previous = dict(zip(team_ids, pool.map(lambda t: _team_history(t, season - 1), team_ids)))
-        summaries = pool.map(lambda e: http_get(ESPN_NFL_SUMMARY_URL, params={"event": e["id"]}), events)
+        summaries = pool.map(lambda e: cached_get(ESPN_NFL_SUMMARY_URL, {"event": e["id"]},
+                                                  cacheable=True, keep=SUMMARY_KEYS), events)
         lines_by_id = {e["id"]: parse_pickcenter(s) for e, s in zip(events, summaries)}
 
     rows = []

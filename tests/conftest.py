@@ -9,6 +9,8 @@ os.environ.setdefault("TELEGRAM_CHAT_ID", "test-chat")
 # Respaldo de la BD a una carpeta temporal: un test que corra main() nunca escribe en iCloud
 _BACKUP_TMP = tempfile.mkdtemp(prefix="valuebot-tests-")
 os.environ["DB_BACKUP_DIR"] = os.path.join(_BACKUP_TMP, "ValueBot")
+# Caché de los backtests también: ningún test lee ni llena la del repo
+os.environ["BACKTEST_CACHE_DIR"] = os.path.join(_BACKUP_TMP, "backtest_http")
 
 
 import pytest  # noqa: E402  (las variables de arriba van antes de cualquier import de value_bot)
@@ -16,7 +18,7 @@ import pytest  # noqa: E402  (las variables de arriba van antes de cualquier imp
 
 @pytest.fixture(scope="session", autouse=True)
 def _remove_backup_tmp():
-    """La carpeta temporal de los respaldos se borra al terminar la sesión."""
+    """La carpeta temporal (respaldos y caché) se borra al terminar la sesión."""
     yield
     shutil.rmtree(_BACKUP_TMP, ignore_errors=True)
 
