@@ -26,6 +26,10 @@ Analista senior de apuestas multi-deporte. Genera picks + parlays diarios y los 
 
 Sin deportes activos, `main()` sale sin scrapear ni enviar (y sin resolver resultados). Playwright de fútbol corre antes de los picks si fútbol está activo; NBA ya no usa Playwright ni BBC (sin ESPN no hay líneas y sin líneas no hay picks). Cada deporte corre aislado (`main._collect_picks` / `_safe_picks`): si uno revienta se loguea y el mensaje sale con los demás.
 
+**Registro de deportes** (`sports_registry.py`, `SportSpec`: clave, emoji, título de sección, sustantivo, `parlay_ok`; orden = orden de secciones del mensaje). De ahí salen `active_sports()`, los emojis y secciones de Telegram (`build_message({deporte: picks}, parlays, …)`) y `parlays.PARLAY_SPORTS`. Toggles y fechas siguen en `config` (`SPORTS_ENABLED`, `MODEL_SINCE`) y las fuentes en `main.PICK_SOURCES`: `tests/test_sports_registry.py` exige las mismas claves. Agregar un deporte = módulo de picks + entrada en los cuatro. El resolver todavía tiene sus propias fuentes por deporte.
+
+**Contrato del pick** (`analysis/pick.py`, `Pick` TypedDict): `sport`, `league`, `home`, `away`, `type`, `confidence`, `est_odds`, `our_prob`, `value`, `reasoning`, `data_quality` y `real_odds_source` verdadero. `main` pasa cada deporte (y BTTS) por `keep_valid`: un pick incompleto se loguea como ERROR y no sale (es un bug de código, no de datos). `tests/test_pick_contract.py` corre cada `get_*_picks` con el modelo real.
+
 ## Temporadas (calculadas por fecha en cada llamada, `config.py`)
 - `nba_season()` / `nba_api_season()`: arranca en octubre. Fuera de abril–junio se usan stats de **temporada regular**, nunca Playoffs viejos; si un equipo tiene < `NBA_MIN_GAMES` (5) se usa la regular anterior.
 - `afl_season(info)`: ligas europeas/Liga MX por año de inicio (julio); `calendar_year: True` para MLS, Brasileirão, Libertadores, Sudamericana, Argentina; `season` explícita solo para torneos puntuales.
@@ -100,7 +104,7 @@ Sin deportes activos, `main()` sale sin scrapear ni enviar (y sin resolver resul
 
 ## Parlays (`analysis/parlays.py`)
 - La cuota es el producto de las cuotas → EV = ∏(1 + EV pierna) − 1: compone el edge **y el error** del modelo (con ROI −13.8 % por pierna NBA, un doble rinde ≈ −26 %). El mensaje lo advierte y muestra el EV del modelo.
-- Pierna elegible (`is_eligible_leg`): deporte que el resolver liquida (`PARLAY_SPORTS` = NBA/NFL; **fútbol fuera** hasta tener muestra resuelta), cuota real (`real_odds_source`), `our_prob`, value ≥ `VALUE_THRESHOLD` y conf ≥ `MIN_CONF_PARLAY` (62). Sin cuota o probabilidad no entra (ya no se asumen 1.80 / 65 %).
+- Pierna elegible (`is_eligible_leg`): deporte que el resolver liquida (`PARLAY_SPORTS` = `parlay_ok` del registro: NBA/NFL; **fútbol fuera** hasta tener muestra resuelta), cuota real (`real_odds_source`), `our_prob`, value ≥ `VALUE_THRESHOLD` y conf ≥ `MIN_CONF_PARLAY` (62). Sin cuota o probabilidad no entra (ya no se asumen 1.80 / 65 %).
 - Partidos distintos (`event_id`, o local+visitante); se elige la combinación de **más EV**, prefiriendo ligas distintas (antes se exigían y los NBA, todos "NBA", nunca se combinaban). Prob. de acertar todas (sin push) ≥ 38 % doble / 27 % triple. El triple **no repite piernas** del doble.
 - **Se guardan y resuelven**: tabla `parlays` (`leg_ids` = ids de `picks`, `db.save_parlays` después de `save_picks`); `resolver.resolve_parlays` corre tras resolver los picks y liquida con `settle_parlay` (una pierna perdida → −1; push se cae y paga ×1; falta una → pendiente). Pierna cuyo pick ya no existe → void; parlay abierto tras `LOOKBACK_DAYS` (180) → void. El reporte semanal muestra el récord (`get_parlay_summary`, mismo alcance que el ROI: todas las piernas de deportes activos y del modelo vigente).
 

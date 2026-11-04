@@ -2,6 +2,7 @@
 import logging
 
 from value_bot.analysis.market import rank_picks
+from value_bot.analysis.pick import Pick
 from value_bot.analysis.nba_model import analyze_nba_game as analyze_nba_market
 from value_bot.config import MAX_PICKS_SPORT, MIN_CONFIDENCE, VALUE_THRESHOLD, nba_api_season
 from value_bot.db import already_sent_bet
@@ -26,7 +27,7 @@ def analyze_nba_game(game: dict) -> list[dict]:
                               min_conf=MIN_CONFIDENCE, value_threshold=VALUE_THRESHOLD)
 
 
-def get_nba_picks() -> list[dict]:
+def get_nba_picks() -> list[Pick]:
     games = get_nba_games()
     store.games_analyzed["nba"] = sum(1 for g in games if g.get("lines"))  # sin líneas no se analiza
     all_picks = []

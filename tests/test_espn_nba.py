@@ -156,7 +156,7 @@ def test_upcoming_failure_does_not_stop_the_daily_message(monkeypatch, caplog):
     def boom():
         raise RuntimeError("ESPN raro")
     monkeypatch.setattr(main, "get_upcoming_nba_events", boom)
-    monkeypatch.setitem(main.SPORTS_ENABLED, "nba", True)
+    monkeypatch.setattr("value_bot.sports_registry.SPORTS_ENABLED", {"nba": True})
     assert main._upcoming() == []
     assert "Próximos partidos" in caplog.text
 

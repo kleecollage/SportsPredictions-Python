@@ -106,7 +106,7 @@ def test_no_games_returns_empty_without_fetching_stats(monkeypatch):
 
 def test_message_renders_nfl_section(wired):
     picks = nfl_picks.get_nfl_picks()
-    msg = build_message([], [], [], nflp=picks)
+    msg = build_message({"nfl": picks}, [])
     assert "🏈 <b>NFL</b> (2 juegos  ·  3 picks  ·  1 💎 value)" in msg
     assert "Líneas: Draft Kings" in msg
     assert "Chiefs: 5-1 | Raiders: 1-5" in msg

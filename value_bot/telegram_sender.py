@@ -8,6 +8,8 @@ from telegram import Bot
 from telegram.constants import ParseMode
 
 from value_bot.config import BOT_TOKEN, CHAT_ID, VALUE_THRESHOLD
+from value_bot.analysis.pick import Pick
+from value_bot.sports_registry import SPORTS, SPORTS_BY_KEY
 from value_bot.store import store
 
 log = logging.getLogger(__name__)
@@ -15,7 +17,7 @@ log = logging.getLogger(__name__)
 DAYS_ES   = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
 MONTHS_ES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
              "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
-SPORT_EMO = {"football": "⚽", "nba": "🏀", "nfl": "🏈"}
+SPORT_EMO = {s.key: s.emoji for s in SPORTS}
 KICKOFF_TZ = ZoneInfo("America/New_York")  # misma zona que el scheduler y las fechas ESPN
 PERF_MIN_SAMPLE = 5  # con menos picks resueltos el rendimiento se muestra con aviso
 
@@ -183,6 +185,11 @@ def _performance_block(perf: dict) -> str:
     return "\n".join(lines)
 
 
+def _noun(sport: str) -> str:
+    spec = SPORTS_BY_KEY.get(sport)
+    return spec.noun if spec else "juego"
+
+
 def _no_picks_block(analyzed: dict | None) -> list[str]:
     """Sin picks: con juegos analizados dice cuántos; sin juegos, que no hubo partidos."""
     counts = {sport: n for sport, n in (analyzed or {}).items() if n}
@@ -194,8 +201,7 @@ def _no_picks_block(analyzed: dict | None) -> list[str]:
             "<i>El bot verificará automáticamente mañana.</i>",
             "",
         ]
-    noun = {"football": "partido"}
-    parts = [f"{SPORT_EMO.get(sport, '🎯')} {plural(n, noun.get(sport, 'juego'))}" for sport, n in counts.items()]
+    parts = [f"{SPORT_EMO.get(sport, '🎯')} {plural(n, _noun(sport))}" for sport, n in counts.items()]
     return [
         "🔍 <b>Sin picks hoy</b>",
         "",
@@ -242,16 +248,22 @@ def _counted_section(emoji_title: str, picks: list, noun: str) -> list[str]:
     return _picks_section(f"{emoji_title} ({counts})", picks, groups)
 
 
-def _picks_blocks(fp: list, np: list, nflp: list) -> list[str]:
-    total = len(fp) + len(np) + len(nflp)
+def _registry_picks(picks_by_sport: dict[str, list[Pick]]) -> dict[str, list[Pick]]:
+    """Solo deportes del registro: uno desconocido no tiene sección, así que tampoco cuenta."""
+    return {s.key: picks_by_sport[s.key] for s in SPORTS if picks_by_sport.get(s.key)}
+
+
+def _picks_blocks(picks_by_sport: dict[str, list[Pick]]) -> list[str]:
+    """Una sección por deporte con picks, en el orden del registro (NBA separa las Finals)."""
+    total = sum(len(picks) for picks in picks_by_sport.values())
     generated = "generado" if total == 1 else "generados"
     lines = [f"🎯 <b>{plural(total, 'pick')} {generated} hoy</b>", ""]
-    if np:
-        lines += _nba_sections(np)
-    if fp:
-        lines += _counted_section("⚽ <b>FÚTBOL</b>", fp, "partido")
-    if nflp:
-        lines += _counted_section("🏈 <b>NFL</b>", nflp, "juego")
+    for key, picks in picks_by_sport.items():
+        spec = SPORTS_BY_KEY[key]
+        if key == "nba":
+            lines += _nba_sections(picks)
+        else:
+            lines += _counted_section(f"{spec.emoji} <b>{spec.title}</b>", picks, spec.noun)
     return lines
 
 
@@ -287,13 +299,15 @@ def _upcoming_block(upcoming: list | None) -> list[str]:
     return lines
 
 
-def build_message(fp, np, parlays, upcoming=None, perf=None, nflp=None, analyzed=None):
+def build_message(picks_by_sport: dict[str, list[Pick]], parlays: list, upcoming: list | None = None,
+                  perf: dict | None = None, analyzed: dict | None = None) -> str:
+    """`picks_by_sport` = {clave del registro: picks}; deportes fuera del registro o vacíos no salen."""
     lines = ["🏆 <b>VALUE BOT PRO v4.6</b>", _date_line(), SEP, ""]
-    nflp = nflp or []
-    if not fp and not np and not nflp:
+    picks_by_sport = _registry_picks(picks_by_sport)
+    if not picks_by_sport:
         lines += _no_picks_block(analyzed)
     else:
-        lines += _picks_blocks(fp, np, nflp) + _parlays_block(parlays)
+        lines += _picks_blocks(picks_by_sport) + _parlays_block(parlays)
     lines += _upcoming_block(upcoming)
 
     # Bloque de rendimiento (solo si hay datos resueltos)

@@ -7,7 +7,7 @@ from value_bot.analysis import football_btts as fb
 from value_bot.analysis import football_picks as fp
 from value_bot.store import store
 
-FIX = {"home": "Home FC", "away": "Away FC", "league": "Premier League"}
+FIX = {"sport": "football", "home": "Home FC", "away": "Away FC", "league": "Premier League"}
 
 
 def _stats(gf=1.5, ga=1.3, played=10):
@@ -93,7 +93,7 @@ def run(tmp_path, monkeypatch):
     store.clear_run_caches()
     store.football_fixtures = [
         {**FIX, "date": "2026-11-08", "odds_key": "soccer_epl"},
-        {"home": "X", "away": "Y", "league": "LaLiga", "date": "2026-11-08", "odds_key": "soccer_spain_la_liga"},
+        {"sport": "football", "home": "X", "away": "Y", "league": "LaLiga", "date": "2026-11-08", "odds_key": "soccer_spain_la_liga"},
     ]
     store.football_stats = {("Premier League", "Home FC"): STRONG, ("Premier League", "Away FC"): STRONG,
                             ("LaLiga", "X"): STRONG, ("LaLiga", "Y"): STRONG}
@@ -154,7 +154,7 @@ def test_daily_run_never_opens_the_btts_step(run, monkeypatch):
 
 
 def test_btts_flag_runs_the_step_and_prints_the_tree(run, monkeypatch, capsys):
-    monkeypatch.setattr(main_mod, "SPORTS_ENABLED", {"football": True})
+    monkeypatch.setattr("value_bot.sports_registry.SPORTS_ENABLED", {"football": True})
     monkeypatch.setattr(main_mod, "pick_leagues", lambda options, credits: frozenset({"LaLiga"}))
     picks = main_mod._btts_picks([], ["--btts"])
     assert [p["home"] for p in picks] == ["X"] and "X vs Y" in capsys.readouterr().out

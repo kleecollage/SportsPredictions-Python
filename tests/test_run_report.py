@@ -15,7 +15,7 @@ from value_bot.store import store
 # ── Mensaje sin picks: distinguir "sin juegos" de "ningún pick con value" ─
 
 def test_no_picks_with_analyzed_games_says_none_passed_the_filters():
-    msg = ts.build_message([], [], [], analyzed={"nba": 4, "nfl": 13})
+    msg = ts.build_message({}, [], analyzed={"nba": 4, "nfl": 13})
     assert "Sin partidos disponibles" not in msg and "No se encontraron fixtures" not in msg
     assert "🏀 4 juegos" in msg and "🏈 13 juegos" in msg
     assert "ningún pick" in msg.lower()
@@ -23,11 +23,11 @@ def test_no_picks_with_analyzed_games_says_none_passed_the_filters():
 
 def test_no_picks_and_no_games_keeps_the_no_fixtures_message():
     for analyzed in (None, {}, {"nba": 0, "nfl": 0}):
-        assert "Sin partidos disponibles" in ts.build_message([], [], [], analyzed=analyzed)
+        assert "Sin partidos disponibles" in ts.build_message({}, [], analyzed=analyzed)
 
 
 def test_analyzed_count_uses_singular():
-    assert "🏈 1 juego" in ts.build_message([], [], [], analyzed={"nfl": 1})
+    assert "🏈 1 juego" in ts.build_message({}, [], analyzed={"nfl": 1})
 
 
 def test_nba_picks_records_how_many_games_were_analyzed(monkeypatch):
@@ -114,5 +114,5 @@ def test_model_since_still_filters_by_send_date(temp_db):
 def test_performance_labels_say_resolved():
     perf = {"period_days": 7, "total_picks": 6, "win_rate": 50.0, "roi_pct": -5.0, "total_profit": -0.3,
             "by_sport": {"nfl": {"total": 6, "wins": 3, "win_rate": 50.0, "profit": -0.3}}, "by_quality": {}}
-    assert "RENDIMIENTO (resueltos en 7 días · modelo actual)" in ts.build_message([], [], [], perf=perf)
+    assert "RENDIMIENTO (resueltos en 7 días · modelo actual)" in ts.build_message({}, [], perf=perf)
     assert "Resumen general (resueltos en 7 días · modelo actual)" in ts.build_weekly_report(perf, [], [])

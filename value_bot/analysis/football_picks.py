@@ -10,6 +10,7 @@ from value_bot.analysis.football_btts import Decision, btts_evaluate, btts_gate
 from value_bot.analysis.football_model import analyze_football_match as analyze_football_market
 from value_bot.analysis.football_model import is_pickable
 from value_bot.analysis.market import rank_picks
+from value_bot.analysis.pick import Pick
 from value_bot.config import MAX_PICKS_SPORT, MIN_CONFIDENCE, VALUE_THRESHOLD
 from value_bot.db import already_sent_for_game
 from value_bot.sports.football import build_football_stats, collect_football_fixtures, side_stats
@@ -51,7 +52,7 @@ def _cap_per_league_type(picks: list[dict]) -> list[dict]:
     return kept
 
 
-def get_football_picks() -> list[dict]:
+def get_football_picks() -> list[Pick]:
     fixtures = collect_football_fixtures()
     store.games_analyzed["football"] = len(fixtures)
     stats = build_football_stats(fixtures)

@@ -2,6 +2,7 @@
 import logging
 
 from value_bot.analysis.market import rank_picks
+from value_bot.analysis.pick import Pick
 from value_bot.analysis.nfl_model import analyze_nfl_game, is_pickable_week, team_rating
 from value_bot.config import MAX_PICKS_SPORT, MIN_CONFIDENCE, VALUE_THRESHOLD
 from value_bot.sports.nfl import get_league_average, get_nfl_games, get_team_scores
@@ -29,7 +30,7 @@ def _has_data(rating: dict) -> bool:
     return bool(rating["games"] or rating["previous_games"])
 
 
-def get_nfl_picks() -> list[dict]:
+def get_nfl_picks() -> list[Pick]:
     scheduled = get_nfl_games()
     store.games_analyzed["nfl"] = len(scheduled)
     games = [g for g in scheduled if is_pickable_week(g)]

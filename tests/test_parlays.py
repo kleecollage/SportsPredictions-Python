@@ -187,7 +187,7 @@ def test_main_saves_parlays_linked_to_the_saved_picks(temp_db, monkeypatch):
     async def no_send(_msg):
         return None
     legs = [_leg(i) for i in range(2)]
-    monkeypatch.setattr(main, "SPORTS_ENABLED", {"football": False, "nba": True, "nfl": False})
+    monkeypatch.setattr("value_bot.sports_registry.SPORTS_ENABLED", {"football": False, "nba": True, "nfl": False})
     monkeypatch.setattr(main, "PICK_SOURCES", {"football": list, "nba": lambda: legs, "nfl": list})
     monkeypatch.setattr(main, "resolve_pending_picks", lambda: 0)
     monkeypatch.setattr(main, "get_upcoming_nba_events", lambda: [])
@@ -221,7 +221,7 @@ def test_resolving_parlays_runs_even_if_picks_fail_and_never_raises(monkeypatch)
 def test_message_shows_parlay_ev_and_compounding_warning():
     from value_bot import telegram_sender as ts
     parlays = pl.build_parlays([_leg(i) for i in range(2)])
-    msg = ts.build_message([], [_leg(i) for i in range(2)], parlays)
+    msg = ts.build_message({"nba": [_leg(i) for i in range(2)]}, parlays)
     assert "EV modelo: <b>+10.2%</b>" in msg
     assert "multiplica" in msg
 
@@ -244,7 +244,7 @@ def test_failing_to_save_parlays_does_not_break_the_run(temp_db, monkeypatch, ca
     def boom(*_a):
         raise sqlite3.OperationalError("database is locked")
     legs = [_leg(i) for i in range(2)]
-    monkeypatch.setattr(main, "SPORTS_ENABLED", {"football": False, "nba": True, "nfl": False})
+    monkeypatch.setattr("value_bot.sports_registry.SPORTS_ENABLED", {"football": False, "nba": True, "nfl": False})
     monkeypatch.setattr(main, "PICK_SOURCES", {"football": list, "nba": lambda: legs, "nfl": list})
     monkeypatch.setattr(main, "resolve_pending_picks", lambda: 0)
     monkeypatch.setattr(main, "get_upcoming_nba_events", lambda: [])

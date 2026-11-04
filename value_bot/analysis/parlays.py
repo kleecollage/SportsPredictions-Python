@@ -12,13 +12,13 @@ from itertools import combinations
 from math import prod
 
 from value_bot.config import MIN_CONF_PARLAY, VALUE_THRESHOLD
+from value_bot.sports_registry import SPORTS, SPORTS_BY_KEY
 
 log = logging.getLogger(__name__)
 
-PARLAY_SPORTS = ("nba", "nfl")      # los que el resolver liquida (fútbol aún no)
+PARLAY_SPORTS = tuple(s.key for s in SPORTS if s.parlay_ok)   # los que el resolver liquida
 MIN_PROB = {2: 0.38, 3: 0.27}       # prob. de acertar todas las piernas
 LABELS = {2: "⚡ PARLAY DOBLE", 3: "🔥 PARLAY TRIPLE"}
-SPORT_EMOJI = {"football": "⚽", "nba": "🏀", "nfl": "🏈"}
 
 
 def is_eligible_leg(pick: dict) -> bool:
@@ -69,7 +69,7 @@ def _best_combo(pool: list[dict], size: int) -> list[dict] | None:
 
 def _parlay(legs: list[dict]) -> dict:
     sports = {leg.get("sport") for leg in legs}
-    tag = " MIXTO" if len(sports) > 1 else f" {SPORT_EMOJI.get(legs[0].get('sport'), '🎯')}"
+    tag = " MIXTO" if len(sports) > 1 else f" {getattr(SPORTS_BY_KEY.get(legs[0].get('sport')), 'emoji', '🎯')}"
     return {"label": f"{LABELS[len(legs)]}{tag}", "legs": legs, **parlay_stats(legs)}
 
 

@@ -5,15 +5,17 @@ import logging
 import sys
 from datetime import datetime
 
-from value_bot.config import FLASHSCORE_ENABLED, MODEL_SINCE, SPORTS_ENABLED, validate_env
+from value_bot.config import FLASHSCORE_ENABLED, MODEL_SINCE, validate_env
 from value_bot.scrapers.playwright_scraper import PLAYWRIGHT_OK
 from value_bot.scrapers.flashscore import run_playwright_scrapers
 from value_bot.analysis.football_picks import get_btts_picks, get_football_picks
 from value_bot.analysis.nba_picks import get_nba_picks
 from value_bot.analysis.nfl_picks import get_nfl_picks
 from value_bot.analysis.parlays import build_parlays
+from value_bot.analysis.pick import keep_valid
 from value_bot.scrapers.espn import get_upcoming_nba_events
 from value_bot.telegram_sender import build_message, build_weekly_report, send_telegram
+from value_bot.sports_registry import SPORTS_BY_KEY, active_sports, sport_keys
 from value_bot.store import store
 from value_bot.db import (
     get_model_calibration, get_parlay_summary, get_recent_picks, get_roi_summary, init_db, save_parlays, save_picks,
@@ -34,9 +36,9 @@ BTTS_FLAG = "--btts"   # BTTS gasta créditos por partido: solo a mano, nunca de
 
 
 def _safe_picks(sport: str) -> list:
-    """Picks de un deporte; si revienta se loguea y se envían los demás."""
+    """Picks de un deporte que cumplen el contrato; si revienta se loguea y se envían los demás."""
     try:
-        return PICK_SOURCES[sport]()
+        return keep_valid(PICK_SOURCES[sport](), sport)
     except Exception:
         log.exception("Picks %s fallaron → se envía el mensaje sin ese deporte", sport)
         return []
@@ -49,7 +51,7 @@ def _choose_btts_leagues(counts: dict[str, int], credits_left: int | None) -> fr
 
 def _btts_picks(football_picks: list[dict], argv: list[str]) -> list[dict]:
     """BTTS bajo demanda (`--btts`): selector de ligas en la terminal y árbol por partido."""
-    if BTTS_FLAG not in argv or not SPORTS_ENABLED.get("football"):
+    if BTTS_FLAG not in argv or "football" not in active_sports():
         return []
     try:
         picks, decisions = get_btts_picks(football_picks, _choose_btts_leagues)
@@ -58,12 +60,12 @@ def _btts_picks(football_picks: list[dict], argv: list[str]) -> list[dict]:
         return []
     if decisions:
         print(render_decisions(decisions))
-    return picks
+    return keep_valid(picks, "football")
 
 
 def _upcoming() -> list:
     """Sección informativa "Próximos partidos": si falla, el mensaje sale sin ella."""
-    if not SPORTS_ENABLED.get("nba"):
+    if "nba" not in active_sports():
         return []
     try:
         return get_upcoming_nba_events()
@@ -75,14 +77,14 @@ def _upcoming() -> list:
 async def _collect_picks() -> dict[str, list]:
     """Picks de los deportes activos en paralelo; {deporte: [...]} con [] para los apagados."""
     loop = asyncio.get_running_loop()
-    active = [sport for sport in PICK_SOURCES if SPORTS_ENABLED.get(sport)]
+    active = active_sports()
     results = await asyncio.gather(*(loop.run_in_executor(None, _safe_picks, s) for s in active))
-    return {sport: [] for sport in PICK_SOURCES} | dict(zip(active, results))
+    return {sport: [] for sport in sport_keys()} | dict(zip(active, results))
 
 
 def _current_scope() -> dict:
     """Filtro de rendimiento: deportes activos y picks de su modelo vigente (MODEL_SINCE)."""
-    return {"sports": [sport for sport, on in SPORTS_ENABLED.items() if on], "model_since": MODEL_SINCE}
+    return {"sports": active_sports(), "model_since": MODEL_SINCE}
 
 
 def _current_performance() -> dict:
@@ -92,7 +94,7 @@ def _current_performance() -> dict:
 
 async def _football_scrapers():
     """Capa 4 fútbol: Playwright Flashscore antes de los picks, solo con FLASHSCORE_ENABLED."""
-    if SPORTS_ENABLED.get("football") and FLASHSCORE_ENABLED:
+    if "football" in active_sports() and FLASHSCORE_ENABLED:
         await run_playwright_scrapers()
 
 
@@ -119,9 +121,9 @@ def _save_parlays(run_date: str, parlays: list) -> None:
 async def main(argv: list[str] | None = None) -> None:
     """`argv` con BTTS_FLAG abre el selector de BTTS (por defecto nunca: el scheduler no lo pasa)."""
     log.info("═══ Value Bot Pro v4.6 · Multi-Deporte + Playwright ═══")
-    active_sports = [k for k, v in SPORTS_ENABLED.items() if v]
-    log.info("Deportes activos: %s", active_sports)
-    if not active_sports:
+    active = active_sports()
+    log.info("Deportes activos: %s", active)
+    if not active:
         log.info("Sin deportes activos en SPORTS_ENABLED → no se scrapea ni se envía mensaje")
         return
     log.info("nba_api disponible: %s | playwright: %s", _NBA_API_OK, PLAYWRIGHT_OK)
@@ -136,15 +138,13 @@ async def main(argv: list[str] | None = None) -> None:
     await _football_scrapers()
 
     picks = await _collect_picks()
-    football_picks, nba_picks, nfl_picks = picks["football"], picks["nba"], picks["nfl"]
-    football_picks = football_picks + _btts_picks(football_picks, argv or [])
+    picks = {**picks, "football": picks["football"] + _btts_picks(picks["football"], argv or [])}
 
-    all_picks = football_picks + nba_picks + nfl_picks
+    all_picks = [pick for sport in sport_keys() for pick in picks[sport]]
     parlays   = build_parlays(all_picks)
     upcoming  = _upcoming()
     perf      = _current_performance()
-    message   = build_message(football_picks, nba_picks, parlays, upcoming, perf=perf, nflp=nfl_picks,
-                              analyzed=dict(store.games_analyzed))
+    message   = build_message(picks, parlays, upcoming, perf=perf, analyzed=dict(store.games_analyzed))
 
     await send_telegram(message)
 
@@ -154,8 +154,8 @@ async def main(argv: list[str] | None = None) -> None:
     inserted = save_picks(run_date, all_picks)
     _save_parlays(run_date, parlays)
 
-    log.info("═══ ✓ Enviado | ⚽%d 🏀%d 🏈%d | Parlays:%d | DB:%d picks ═══",
-             len(football_picks), len(nba_picks), len(nfl_picks), len(parlays), inserted)
+    per_sport = " ".join(f"{SPORTS_BY_KEY[sport].emoji}{len(picks[sport])}" for sport in sport_keys())
+    log.info("═══ ✓ Enviado | %s | Parlays:%d | DB:%d picks ═══", per_sport, len(parlays), inserted)
 
 
 async def weekly_report():

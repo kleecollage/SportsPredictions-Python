@@ -3,16 +3,27 @@ import asyncio
 
 from value_bot import main
 
+NFL_PICK = {"sport": "nfl", "league": "NFL", "home": "H", "away": "A", "type": "Victoria H",
+            "confidence": 56, "est_odds": 1.9, "our_prob": 0.56, "value": 0.05, "reasoning": "r",
+            "data_quality": "high", "real_odds_source": True}
+
 
 def test_failing_sport_returns_empty_and_others_still_run(monkeypatch):
     def boom():
         raise KeyError("TEAM_ID")
 
-    monkeypatch.setattr(main, "SPORTS_ENABLED", {"football": False, "nba": True, "nfl": True})
+    monkeypatch.setattr("value_bot.sports_registry.SPORTS_ENABLED", {"football": False, "nba": True, "nfl": True})
     monkeypatch.setattr(main, "PICK_SOURCES",
-                        {"football": lambda: ["no debe correr"], "nba": boom, "nfl": lambda: [{"pick": 1}]})
+                        {"football": lambda: ["no debe correr"], "nba": boom, "nfl": lambda: [NFL_PICK]})
     picks = asyncio.run(main._collect_picks())
-    assert picks == {"football": [], "nba": [], "nfl": [{"pick": 1}]}
+    assert picks == {"football": [], "nba": [], "nfl": [NFL_PICK]}
+
+
+def test_picks_breaking_the_contract_are_dropped(monkeypatch):
+    broken = {k: v for k, v in NFL_PICK.items() if k != "reasoning"}
+    monkeypatch.setattr("value_bot.sports_registry.SPORTS_ENABLED", {"football": False, "nba": False, "nfl": True})
+    monkeypatch.setattr(main, "PICK_SOURCES", {**main.PICK_SOURCES, "nfl": lambda: [NFL_PICK, broken]})
+    assert asyncio.run(main._collect_picks())["nfl"] == [NFL_PICK]
 
 
 def _flashscore_runs(monkeypatch, football_on, flashscore_on):
@@ -21,7 +32,7 @@ def _flashscore_runs(monkeypatch, football_on, flashscore_on):
     async def fake_scrapers():
         ran.append(True)
     monkeypatch.setattr(main, "run_playwright_scrapers", fake_scrapers)
-    monkeypatch.setattr(main, "SPORTS_ENABLED", {"football": football_on, "nba": True, "nfl": True})
+    monkeypatch.setattr("value_bot.sports_registry.SPORTS_ENABLED", {"football": football_on, "nba": True, "nfl": True})
     monkeypatch.setattr(main, "FLASHSCORE_ENABLED", flashscore_on)
     asyncio.run(main._football_scrapers())
     return bool(ran)

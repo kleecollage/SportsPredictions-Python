@@ -32,7 +32,7 @@ def test_plural_helper():
 
 
 def test_single_nfl_pick_message_uses_singular():
-    msg = ts.build_message([], [], [], nflp=[_nfl_pick()])
+    msg = ts.build_message({"nfl": [_nfl_pick()]}, [])
     assert "1 pick generado hoy" in msg
     assert "(1 juego  ·  1 pick  ·  1 💎 value)" in msg
     assert "picks" not in msg.replace("Picks", "")
@@ -40,7 +40,7 @@ def test_single_nfl_pick_message_uses_singular():
 
 def test_several_picks_message_uses_plural():
     picks = [_nfl_pick(), _nfl_pick(home="Kansas City Chiefs", away="Seattle Seahawks")]
-    msg = ts.build_message([], [], [], nflp=picks)
+    msg = ts.build_message({"nfl": picks}, [])
     assert "2 picks generados hoy" in msg
     assert "(2 juegos  ·  2 picks  ·  2 💎 values)" in msg
 
@@ -48,7 +48,7 @@ def test_several_picks_message_uses_plural():
 def test_performance_block_says_it_covers_the_current_model_only():
     perf = {"total_picks": 6, "win_rate": 50.0, "roi_pct": -5.0, "total_profit": -0.3,
             "by_sport": {"nfl": {"win_rate": 50.0}}, "by_quality": {}}
-    msg = ts.build_message([], [], [], perf=perf, nflp=[_nfl_pick()])
+    msg = ts.build_message({"nfl": [_nfl_pick()]}, [], perf=perf)
     assert "RENDIMIENTO (resueltos en 7 días · modelo actual)" in msg
 
 
@@ -56,7 +56,7 @@ def test_performance_block_says_it_covers_the_current_model_only():
 
 def test_kickoff_non_string_does_not_break_the_message():
     assert ts.fmt_ko(1729450000) == "" and ts.fmt_ko(None) == ""
-    msg = ts.build_message([], [], [], nflp=[_nfl_pick(kickoff=1729450000)])
+    msg = ts.build_message({"nfl": [_nfl_pick(kickoff=1729450000)]}, [])
     assert "Las Vegas Raiders" in msg
 
 
@@ -74,17 +74,17 @@ def _perf(n):
 
 
 def test_performance_block_shows_from_one_pick_with_small_sample_warning():
-    msg = ts.build_message([], [], [], perf=_perf(1), nflp=[_nfl_pick()])
+    msg = ts.build_message({"nfl": [_nfl_pick()]}, [], perf=_perf(1))
     assert "RENDIMIENTO" in msg and "Muestra pequeña" in msg
 
 
 def test_performance_block_without_warning_once_sample_is_enough():
-    msg = ts.build_message([], [], [], perf=_perf(5), nflp=[_nfl_pick()])
+    msg = ts.build_message({"nfl": [_nfl_pick()]}, [], perf=_perf(5))
     assert "RENDIMIENTO" in msg and "Muestra pequeña" not in msg
 
 
 def test_performance_block_hidden_without_resolved_picks():
-    msg = ts.build_message([], [], [], perf={"error": "sin datos resueltos"}, nflp=[_nfl_pick()])
+    msg = ts.build_message({"nfl": [_nfl_pick()]}, [], perf={"error": "sin datos resueltos"})
     assert "RENDIMIENTO" not in msg
 
 
@@ -103,5 +103,5 @@ def test_weekly_report_without_current_model_data_says_so():
 def test_nba_finals_header_uses_the_current_year():
     from datetime import datetime
     finals = {**_nfl_pick(), "sport": "nba", "league": "NBA Finals", "flag": "🏆", "is_finals": True}
-    msg = ts.build_message([], [finals], [])
+    msg = ts.build_message({"nba": [finals]}, [])
     assert f"NBA FINALS {datetime.now().year}" in msg
