@@ -45,6 +45,7 @@ def init_db():
             ON results (pick_id)
         """)
         _create_parlays_table(conn)
+        _create_runs_table(conn)
         conn.commit()
     log.info("DB inicializada: %s", connection.DB_PATH)
 
@@ -73,6 +74,18 @@ def _create_parlays_table(conn: sqlite3.Connection) -> None:
             UNIQUE (run_date, leg_ids)
         )
     """)
+
+
+def _create_runs_table(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS runs (
+            id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind    TEXT NOT NULL,                 -- daily | weekly
+            run_at  TEXT NOT NULL,                 -- ISO UTC del intento
+            status  TEXT NOT NULL CHECK(status IN ('started', 'ok', 'failed'))
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_kind_at ON runs (kind, run_at)")
 
 
 def _dedupe_results(conn: sqlite3.Connection) -> None:

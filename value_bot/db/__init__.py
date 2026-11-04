@@ -12,12 +12,13 @@ from value_bot.db.reports import (
     get_parlay_summary, get_recent_picks, get_roi_summary, load_picks_df,
 )
 from value_bot.db.results import get_unresolved_picks, save_result
+from value_bot.db.runs import finish_run, get_runs, start_run
 from value_bot.db.schema import init_db
 
 __all__ = [
     "already_sent_bet", "already_sent_for_event", "already_sent_for_game", "backup_db",
-    "CALIBRATION_LOOKBACK_DAYS", "CALIBRATION_MIN_RESOLVED", "connection", "get_calibration_factors",
-    "get_model_calibration", "get_parlay_summary", "get_pending_parlays", "get_recent_picks", "get_roi_summary",
-    "get_unresolved_picks", "init_db", "load_picks_df", "save_parlay_result", "save_parlays", "save_picks",
-    "save_result",
+    "CALIBRATION_LOOKBACK_DAYS", "CALIBRATION_MIN_RESOLVED", "connection", "finish_run",
+    "get_calibration_factors", "get_model_calibration", "get_parlay_summary", "get_pending_parlays",
+    "get_recent_picks", "get_roi_summary", "get_runs", "get_unresolved_picks", "init_db", "load_picks_df",
+    "save_parlay_result", "save_parlays", "save_picks", "save_result", "start_run",
 ]

@@ -36,7 +36,7 @@ log = logging.getLogger(__name__)
 PICK_SOURCES = {"football": get_football_picks,
                 "nba": get_nba_picks,
                 "nfl": get_nfl_picks}
-BTTS_FLAG = "--btts"   # BTTS gasta créditos por partido: solo a mano, nunca desde el scheduler
+BTTS_FLAG = "--btts"   # BTTS gasta créditos por partido: solo a mano, nunca desde el runner
 
 
 def _safe_picks(sport: str, ctx: RunContext) -> list[Pick]:
@@ -114,6 +114,18 @@ def _resolve_results():
         log.exception("Resolución de parlays falló")
 
 
+def _save_picks(run_date: str, picks: list) -> int:
+    """
+    El mensaje ya salió: un fallo al guardar se loguea y la corrida cuenta como hecha (si
+    subiera, el runner la reintentaría y reenviaría los mismos picks).
+    """
+    try:
+        return save_picks(run_date, picks)
+    except Exception:
+        log.exception("Guardar picks falló")
+        return 0
+
+
 def _save_parlays(run_date: str, parlays: list) -> None:
     """El mensaje ya salió: un fallo al guardar parlays se loguea y la corrida sigue."""
     try:
@@ -123,7 +135,7 @@ def _save_parlays(run_date: str, parlays: list) -> None:
 
 
 async def main(argv: list[str] | None = None) -> None:
-    """`argv` con BTTS_FLAG abre el selector de BTTS (por defecto nunca: el scheduler no lo pasa)."""
+    """`argv` con BTTS_FLAG abre el selector de BTTS (por defecto nunca: el runner no lo pasa)."""
     log.info("═══ Value Bot Pro v4.6 · Multi-Deporte + Playwright ═══")
     active = active_sports()
     log.info("Deportes activos: %s", active)
@@ -161,7 +173,7 @@ async def _send_picks(argv: list[str]) -> None:
     run_date = datetime.now().strftime("%Y-%m-%d")
 
     # Persistir picks del día y los parlays (ligados a esos picks)
-    inserted = save_picks(run_date, all_picks)
+    inserted = _save_picks(run_date, all_picks)
     _save_parlays(run_date, parlays)
 
     per_sport = " ".join(f"{SPORTS_BY_KEY[sport].emoji}{len(picks[sport])}" for sport in sport_keys())
@@ -185,9 +197,14 @@ async def weekly_report():
     log.info("═══ ✓ Reporte semanal enviado ═══")
 
 
+def _run_by_hand(argv: list[str]) -> None:
+    """Corrida a mano: queda registrada como la del runner, que así no la repite en ese turno."""
+    from value_bot.runner import ET, run_recorded
+    kind, job = ("weekly", weekly_report) if "--weekly" in argv else ("daily", lambda: main(argv))
+    if not asyncio.run(run_recorded(kind, job, datetime.now(ET))):
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     validate_env()
-    if "--weekly" in sys.argv:
-        asyncio.run(weekly_report())
-    else:
-        asyncio.run(main(sys.argv[1:]))
+    _run_by_hand(sys.argv[1:])

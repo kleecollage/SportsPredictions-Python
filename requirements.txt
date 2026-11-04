@@ -14,10 +14,6 @@ nba_api>=1.4               # stats NBA históricas
 # Analytics (opcional pero recomendado)
 pandas>=2.0                # análisis de BD, calibración del modelo
 
-# Scheduling (alternativa a crontab)
-APScheduler>=3.10          # scheduler programático con misfire recovery
-SQLAlchemy>=2.0            # jobstore SQLite para APScheduler
-
 # Retry HTTP
 tenacity>=8.0              # backoff exponencial para llamadas API
 

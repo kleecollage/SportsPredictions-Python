@@ -74,8 +74,8 @@ FLASHSCORE_ENABLED = False
 PLAYWRIGHT_TIMEOUT = 30_000  # ms
 
 # ── Temporadas ────────────────────────────────────────────────────
-# Se calculan en cada llamada (no al importar) para que el scheduler,
-# que vive meses, cambie de temporada solo.
+# Se calculan en cada llamada (no al importar): ningún import viejo ni proceso largo
+# se queda con la temporada anterior.
 NBA_SEASON_START_MONTH  = 10   # la NBA arranca en octubre
 EURO_SEASON_START_MONTH = 7    # ligas europeas / Liga MX arrancan en julio-agosto
 NBA_MIN_GAMES           = 5    # menos juegos = muestra no fiable → temporada anterior
@@ -205,7 +205,7 @@ _OPTIONAL_TOKENS = {
 
 
 def validate_env() -> None:
-    """Lo llaman los entry points que envían (main, scheduler), no el import: los tests y
+    """Lo llaman los entry points que envían (main, runner), no el import: los tests y
     backtests importan config sin Telegram."""
     required = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]
     missing = [k for k in required if not os.getenv(k)]

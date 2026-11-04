@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    Value Bot Pro — agente launchd (Mac). Corre value_bot.runner cada 15 min y al iniciar sesión;
+    el runner decide en hora ET si tocan los picks (9:00) o el reporte (lunes 9:05) y sale.
+    Al prender o despertar, RunAtLoad / la próxima pasada (≤ 15 min) recupera lo perdido: el runner
+    mira la BD, no depende de que launchd guarde los intervalos que se saltó.
+
+    Instalación (si estaba el servicio viejo com.valuebot.scheduler, descargarlo antes):
+        launchctl unload ~/Library/LaunchAgents/com.valuebot.scheduler.plist
+        rm ~/Library/LaunchAgents/com.valuebot.scheduler.plist
+        cp /Users/kleec/Documents/PronosticProject/value_bot/runner.plist \
+           ~/Library/LaunchAgents/com.valuebot.runner.plist
+        launchctl load ~/Library/LaunchAgents/com.valuebot.runner.plist
+
+    Desinstalar:
+        launchctl unload ~/Library/LaunchAgents/com.valuebot.runner.plist
+
+    Ver logs:
+        tail -f /Users/kleec/Documents/PronosticProject/runner_error.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.valuebot.runner</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/kleec/Documents/PronosticProject/.venv/bin/python</string>
+        <string>-m</string>
+        <string>value_bot.runner</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/kleec/Documents/PronosticProject</string>
+
+    <!-- Al iniciar sesión y cada 15 min; el runner sale enseguida si no toca nada -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StartInterval</key>
+    <integer>900</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/kleec/Documents/PronosticProject/runner.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/kleec/Documents/PronosticProject/runner_error.log</string>
+</dict>
+</plist>

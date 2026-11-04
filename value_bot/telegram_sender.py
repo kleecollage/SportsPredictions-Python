@@ -17,7 +17,7 @@ DAYS_ES   = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "D
 MONTHS_ES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
              "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 SPORT_EMO = {s.key: s.emoji for s in SPORTS}
-KICKOFF_TZ = ZoneInfo("America/New_York")  # misma zona que el scheduler y las fechas ESPN
+KICKOFF_TZ = ZoneInfo("America/New_York")  # misma zona que el runner y las fechas ESPN
 PERF_MIN_SAMPLE = 5  # con menos picks resueltos el rendimiento se muestra con aviso
 
 

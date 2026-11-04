@@ -226,5 +226,4 @@ skills-lock.json
 
 # BDs locales: picks_history.db se respalda en iCloud (value_bot/db/backup.py), no en git
 picks_history.db
-scheduler.db
 *.db-journal

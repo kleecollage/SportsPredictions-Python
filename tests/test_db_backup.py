@@ -1,4 +1,4 @@
-"""Respaldo de picks_history.db fuera de git y jobstore del scheduler aparte."""
+"""Respaldo de picks_history.db fuera de git."""
 import asyncio
 import sqlite3
 from pathlib import Path
@@ -89,17 +89,11 @@ def test_weekly_report_also_backs_up(temp_db, monkeypatch):
     assert calls == ["backup"]
 
 
-# ── Jobstore del scheduler ────────────────────────────────────────
-
-def test_scheduler_jobs_live_in_their_own_db():
-    from value_bot import scheduler
-    assert scheduler.SCHEDULER_DB_PATH.name == "scheduler.db"
-    assert scheduler.SCHEDULER_DB_PATH.parent == db.connection.DB_PATH.parent
-
+# ── Git ───────────────────────────────────────────────────────────
 
 def test_local_dbs_are_ignored_by_git():
     gitignore = (Path(__file__).parent.parent / ".gitignore").read_text().splitlines()
-    assert "picks_history.db" in gitignore and "scheduler.db" in gitignore
+    assert "picks_history.db" in gitignore
 
 
 # ── Revisión: rotación segura, conexiones cerradas, respaldo aunque falle el envío ──
