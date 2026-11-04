@@ -1,10 +1,10 @@
 """Picks NBA: junta juegos + stats + líneas ESPN con el modelo y filtra contra la BD."""
 import logging
 
-from value_bot.analysis.market import SIDE_MARKETS
+from value_bot.analysis.market import rank_picks
 from value_bot.analysis.nba_model import analyze_nba_game as analyze_nba_market
 from value_bot.config import MAX_PICKS_SPORT, MIN_CONFIDENCE, VALUE_THRESHOLD, nba_api_season
-from value_bot.db import already_sent_for_event
+from value_bot.db import already_sent_bet
 from value_bot.sports.nba import get_best_nba_stats, get_nba_games, nba_get_team_form
 from value_bot.store import store
 
@@ -26,24 +26,13 @@ def analyze_nba_game(game: dict) -> list[dict]:
                               min_conf=MIN_CONFIDENCE, value_threshold=VALUE_THRESHOLD)
 
 
-def _already_sent(event_id: str | None, pick: dict) -> bool:
-    """
-    Un pick por partido y mercado aunque el juego aparezca en varias corridas, y
-    una sola apuesta de lado (moneyline o spread, de cualquier equipo) por partido.
-    """
-    if not event_id:
-        return False
-    markets = SIDE_MARKETS if pick["market"] in SIDE_MARKETS else (pick["market"],)
-    return any(already_sent_for_event(event_id, market, sport="nba") for market in markets)
-
-
 def get_nba_picks() -> list[dict]:
     games = get_nba_games()
     store.games_analyzed["nba"] = sum(1 for g in games if g.get("lines"))  # sin líneas no se analiza
     all_picks = []
     for game in games:
         for pick in analyze_nba_game(game):
-            if _already_sent(game.get("event_id"), pick):
+            if already_sent_bet(game.get("event_id"), pick["market"], sport="nba"):
                 log.info("NBA dedup BD: %s ya enviado para %s vs %s", pick["market"], game["home"], game["away"])
                 continue
             all_picks.append({
@@ -54,9 +43,7 @@ def get_nba_picks() -> list[dict]:
             })
 
     # Value bets primero, luego por confianza
-    all_picks.sort(key=lambda p: ((p.get("value") or 0) >= VALUE_THRESHOLD, p["confidence"]),
-                   reverse=True)
-    result = all_picks[:MAX_PICKS_SPORT]
+    result = rank_picks(all_picks, VALUE_THRESHOLD)[:MAX_PICKS_SPORT]
     _prefetch_form(result)
     log.info("NBA picks: %d", len(result))
     return result

@@ -46,3 +46,25 @@ def test_other_event_with_same_teams_is_allowed(temp_db):
 def test_picks_from_other_sports_do_not_interfere(temp_db):
     db.save_picks("2026-10-16", [_pick(sport="nba")])
     assert _check() is False
+
+
+# ── already_sent_bet: una apuesta de lado por partido (NFL y NBA) ──
+
+def test_side_bet_sent_blocks_the_other_side_market(temp_db):
+    db.save_picks("2026-10-16", [_pick(market="spread")])
+    assert db.already_sent_bet("401", "moneyline", sport="nfl") is True
+
+
+def test_side_bets_do_not_block_totals(temp_db):
+    db.save_picks("2026-10-16", [_pick(market="spread"), _pick(market="moneyline")])
+    assert db.already_sent_bet("401", "total", sport="nfl") is False
+
+
+def test_bet_dedup_is_per_sport(temp_db):
+    db.save_picks("2026-10-16", [_pick(market="spread")])
+    assert db.already_sent_bet("401", "spread", sport="nba") is False
+
+
+def test_without_event_id_nothing_is_blocked(temp_db):
+    db.save_picks("2026-10-16", [_pick(market="spread")])
+    assert db.already_sent_bet(None, "spread", sport="nfl") is False

@@ -61,6 +61,15 @@ def drop_correlated(picks: list[dict]) -> list[dict]:
     return [p for p in picks if p["market"] not in SIDE_MARKETS or p is best]
 
 
+def rank_picks(picks: list[dict], value_threshold: float) -> list[dict]:
+    """
+    Value bets (value ≥ umbral) primero, luego por confianza: decide qué picks entran al
+    tope por deporte en NFL, NBA y fútbol (cambiarlo cambia los tres).
+    """
+    return sorted(picks, key=lambda p: ((p.get("value") or 0) >= value_threshold, p["confidence"]),
+                  reverse=True)
+
+
 # ── Probabilidades ────────────────────────────────────────────────
 
 def normal_cdf(x: float) -> float:

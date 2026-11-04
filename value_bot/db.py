@@ -4,6 +4,8 @@ import logging
 import sqlite3
 from pathlib import Path
 
+from value_bot.analysis.market import SIDE_MARKETS
+
 try:
     import pandas as pd
     _PANDAS_OK = True
@@ -193,6 +195,18 @@ def already_sent_for_event(event_id: str, market: str, sport: str = "nfl") -> bo
             LIMIT 1
         """, (sport, event_id, market)).fetchone()
     return row is not None
+
+
+def already_sent_bet(event_id: str | None, market: str, sport: str) -> bool:
+    """
+    already_sent_for_event con una sola apuesta de lado por partido (NFL y NBA): un
+    moneyline o spread previo, de cualquier equipo, bloquea los dos mercados de lado.
+    Sin event_id no hay con qué deduplicar.
+    """
+    if not event_id:
+        return False
+    markets = SIDE_MARKETS if market in SIDE_MARKETS else (market,)
+    return any(already_sent_for_event(event_id, m, sport=sport) for m in markets)
 
 
 # ── Parlays ───────────────────────────────────────────────────────

@@ -101,7 +101,7 @@ def test_form_is_fetched_only_for_games_with_picks(monkeypatch):
     monkeypatch.setattr(nba_picks, "analyze_nba_game", lambda g: [{
         "market": "moneyline", "type": f"Victoria {g['home']}", "confidence": 64, "value": 0.05}]
         if g["home"] == "H1" else [])
-    monkeypatch.setattr(nba_picks, "already_sent_for_event", lambda *a, **k: False)
+    monkeypatch.setattr(nba_picks, "already_sent_bet", lambda *a, **k: False)
     monkeypatch.setattr(nba_picks, "nba_get_team_form", lambda name: asked.append(name) or {})
     picks = nba_picks.get_nba_picks()
     assert [p["home"] for p in picks] == ["H1"] and asked == ["H1", "A1"]

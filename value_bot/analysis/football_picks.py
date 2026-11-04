@@ -9,6 +9,7 @@ from collections.abc import Callable
 from value_bot.analysis.football_btts import Decision, btts_evaluate, btts_gate
 from value_bot.analysis.football_model import analyze_football_match as analyze_football_market
 from value_bot.analysis.football_model import is_pickable
+from value_bot.analysis.market import rank_picks
 from value_bot.config import MAX_PICKS_SPORT, MIN_CONFIDENCE, VALUE_THRESHOLD
 from value_bot.db import already_sent_for_game
 from value_bot.sports.football import build_football_stats, collect_football_fixtures, side_stats
@@ -66,9 +67,7 @@ def get_football_picks() -> list[dict]:
     if len(fresh) != len(all_picks):
         log.info("Football dedup BD: %d picks ya enviados para esos partidos", len(all_picks) - len(fresh))
 
-    fresh.sort(key=lambda x: (1 if (x.get("value") and x["value"] >= VALUE_THRESHOLD) else 0,
-                              x["confidence"]), reverse=True)
-    picks = _cap_per_league_type(fresh)[:MAX_PICKS_SPORT]
+    picks = _cap_per_league_type(rank_picks(fresh, VALUE_THRESHOLD))[:MAX_PICKS_SPORT]
     log.info("Football picks: %d (de %d fixtures, %d candidatos)", len(picks), len(fixtures), len(all_picks))
     return picks
 

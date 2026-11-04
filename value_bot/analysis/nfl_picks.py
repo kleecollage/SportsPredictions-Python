@@ -1,11 +1,12 @@
 """Picks NFL: junta datos ESPN + modelo y filtra contra la BD."""
 import logging
 
-from value_bot.analysis.nfl_model import SIDE_MARKETS, analyze_nfl_game, is_pickable_week, team_rating
+from value_bot.analysis.market import rank_picks
+from value_bot.analysis.nfl_model import analyze_nfl_game, is_pickable_week, team_rating
 from value_bot.config import MAX_PICKS_SPORT, MIN_CONFIDENCE, VALUE_THRESHOLD
 from value_bot.sports.nfl import get_league_average, get_nfl_games, get_team_scores
 
-from value_bot.db import already_sent_for_event
+from value_bot.db import already_sent_bet
 from value_bot.store import store
 
 log = logging.getLogger(__name__)
@@ -26,17 +27,6 @@ def _has_data(rating: dict) -> bool:
     """Sin juegos (ni de la temporada anterior) el rating es la media de liga: el modelo
     solo vería la localía y empujaría underdogs locales con value ficticio."""
     return bool(rating["games"] or rating["previous_games"])
-
-
-def _already_sent(event_id: str | None, pick: dict) -> bool:
-    """
-    Un pick por partido y mercado aunque el juego aparezca en varias corridas, y
-    una sola apuesta de lado (moneyline o spread, de cualquier equipo) por partido.
-    """
-    if not event_id:
-        return False
-    markets = SIDE_MARKETS if pick["market"] in SIDE_MARKETS else (pick["market"],)
-    return any(already_sent_for_event(event_id, market) for market in markets)
 
 
 def get_nfl_picks() -> list[dict]:
@@ -62,13 +52,11 @@ def get_nfl_picks() -> list[dict]:
             continue
         for pick in analyze_nfl_game(game, home_rating, away_rating, avg,
                                      min_conf=MIN_CONFIDENCE, value_threshold=VALUE_THRESHOLD):
-            if _already_sent(game.get("event_id"), pick):
+            if already_sent_bet(game.get("event_id"), pick["market"], sport="nfl"):
                 continue
             all_picks.append({**game, **pick, "sport": "nfl", "flag": "🏈", "league": "NFL"})
 
     # Value bets primero, luego por confianza
-    all_picks.sort(key=lambda p: ((p.get("value") or 0) >= VALUE_THRESHOLD, p["confidence"]),
-                   reverse=True)
-    result = all_picks[:MAX_PICKS_SPORT]
+    result = rank_picks(all_picks, VALUE_THRESHOLD)[:MAX_PICKS_SPORT]
     log.info("NFL picks: %d (de %d juegos)", len(result), len(games))
     return result

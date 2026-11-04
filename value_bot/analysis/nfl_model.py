@@ -26,8 +26,7 @@ Funciones puras: no hacen requests ni leen la BD.
 import math
 from collections.abc import Sequence
 
-from value_bot.analysis.market import (  # noqa: F401 (SIDE_MARKETS / american_to_decimal: se reexportan)
-    SIDE_MARKETS,
+from value_bot.analysis.market import (  # noqa: F401 (american_to_decimal: se reexporta)
     american_to_decimal,
     best_value as _best_value,
     drop_correlated as _drop_correlated,
